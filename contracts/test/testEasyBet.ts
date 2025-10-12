@@ -10,16 +10,16 @@ describe("Test", function () {
     // Contracts are deployed using the first signer/account by default
     const [owner, otherAccount] = await ethers.getSigners();
 
-    const BuyMyRoom = await ethers.getContractFactory("BuyMyRoom");
-    const buyMyRoom = await BuyMyRoom.deploy();
+    const EasyBet = await ethers.getContractFactory("EasyBet");
+    const easyBet = await EasyBet.deploy();
 
-    return { buyMyRoom, owner, otherAccount };
+    return { easyBet: easyBet, owner, otherAccount };
   }
 
   describe("Deployment", function () {
     it("Should return hello world", async function () {
-      const { buyMyRoom } = await loadFixture(deployFixture);
-      expect(await buyMyRoom.helloworld()).to.equal("hello world");
+      const { easyBet } = await loadFixture(deployFixture);
+      expect(await easyBet.helloworld()).to.equal("hello world");
     });
   });
 });

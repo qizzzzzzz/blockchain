@@ -9,20 +9,21 @@ pragma solidity ^0.8.20;
 // Uncomment this line to use console.log
 // import "hardhat/console.sol";
 
-contract BuyMyRoom {
+contract EasyBet {
 
     // use a event if you want
     // to represent time you can choose block.timestamp
-    event HouseListed(uint256 tokenId, uint256 price, address owner);
+    event BetPlaced(uint256 tokenId, uint256 price, address owner);
 
-    // maybe you need a struct to store car information
-    struct House {
+    // maybe you need a struct to store some activity information
+    struct Activity {
         address owner;
         uint256 listedTimestamp;
+        string[] choices;
         // ...
     }
 
-    mapping(uint256 => House) public houses; // A map from house-index to its information
+    mapping(uint256 => Activity) public activities; // A map from activity-index to its information
     // ...
     // TODO add any variables and functions if you want
 
