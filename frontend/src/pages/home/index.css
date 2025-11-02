@@ -1,0 +1,71 @@
+/* 全局重置，防止浏览器默认 margin/padding 影响 */
+html,
+body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+}
+
+/* 主容器 */
+.container {
+    width: 600px;
+    min-height: 400px;
+    /* 改为 min-height，避免固定高度导致裁剪 */
+    background: #F2F3F4;
+
+    box-sizing: border-box;
+    /* 确保 padding 不影响宽高 */
+    padding: 20px;
+    /* 统一内边距 */
+    margin: 20px auto 0 auto;
+    /* 顶部留白并水平居中 */
+    align-self: flex-start;
+    /* 在父级 flex 容器中靠上对齐，避免被垂直居中 */
+}
+
+/* 主内容 */
+.main {
+    padding: 10px;
+}
+
+/* 操作区域 */
+.operation {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+
+    margin-top: 20px;
+}
+
+/* 按钮区域 */
+.buttons {
+    height: 120px;
+
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* 新增：页面顶部 header（logo + 标题） */
+.header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+/* logo 图片样式（放在 src/pages/home/logo.png） */
+.logo {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+}
+
+/* 标题样式，字体稍大 */
+.title {
+    font-size: 28px;
+    font-weight: 600;
+    color: #111;
+}

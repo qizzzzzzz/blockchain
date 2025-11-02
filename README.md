@@ -37,7 +37,7 @@
     ```bash
     npx hardhat compile
     ```
-4. ...
+4. npx hardhat run scripts/deploy.ts --network ganache
 5. ...
 6. 在 `./frontend` 中安装需要的依赖，运行如下的命令：
     ```bash
