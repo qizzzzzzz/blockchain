@@ -1,6 +1,6 @@
 import { Button, Divider, Input, message, List, Table, Tag, Checkbox } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import type { Key } from 'react';
 import { web3, easyBetContract } from "../../utils/contracts";
 import { TransactionReceipt } from 'web3-core';
@@ -30,6 +30,25 @@ type ActivityDetailView = {
     settled: boolean;
     winningChoice: number;
     choiceBetAmountsEth: string[];
+    content: string;
+};
+
+type MyTicketDetail = {
+    tokenId: number;
+    activityId: number;
+    content: string;
+    deadline: number;
+    deadlineText: string;
+    choices: string[];
+    choiceBetAmountsEth: string[];
+    myChoiceIndex: number;
+    myChoiceName: string;
+    myBetAmountEth: string;
+    winningChoiceIndex: number;
+    winningChoiceName: string;
+    totalPoolEth: string;
+    settled: boolean;
+    order: number;
 };
 
 const LotteryPage = () => {
@@ -39,6 +58,7 @@ const LotteryPage = () => {
     const [choicesCsv, setChoicesCsv] = useState<string>('TeamA,TeamB');
     const [deadlineMinutes, setDeadlineMinutes] = useState<number>(60);
     const [initialPoolEth, setInitialPoolEth] = useState<string>('0.1');
+    const [activityContent, setActivityContent] = useState<string>('A vs B');
     const [createdActivityId, setCreatedActivityId] = useState<number | null>(null);
 
     // 下注
@@ -66,7 +86,8 @@ const LotteryPage = () => {
 
     // 新增：我的 / 市场 数据
     const [myActivities, setMyActivities] = useState<number[]>([]);
-    const [myTickets, setMyTickets] = useState<number[]>([]);
+    const [myTicketDetails, setMyTicketDetails] = useState<MyTicketDetail[]>([]);
+    const [myTicketsLoading, setMyTicketsLoading] = useState<boolean>(false);
     const [myListings, setMyListings] = useState<{ tokenId: number; price: string }[]>([]);
     const [marketListings, setMarketListings] = useState<{ tokenId: number; seller: string; priceWei: string }[]>([]);
     const [selectedListingOffers, setSelectedListingOffers] = useState<{ bidders: string[]; prices: string[] } | null>(null);
@@ -80,19 +101,21 @@ const LotteryPage = () => {
     const [settleActivityDetail, setSettleActivityDetail] = useState<ActivityDetailView | null>(null);
     const [settleOptionsLoading, setSettleOptionsLoading] = useState<boolean>(false);
     const activityColumns: ColumnsType<ActivityDetailView> = [
-        { title: '活动ID', dataIndex: 'id', key: 'id', width: 90, align: 'center' },
+        { title: '竞猜ID', dataIndex: 'id', key: 'id', width: 80, align: 'center' },
+        { title: '竞猜内容', dataIndex: 'content', key: 'content', width: 300, align: 'center' },
         {
             title: '创建者',
             key: 'creator',
-            width: 120,
+            width: 100,
             align: 'center',
             render: (_: any, record: ActivityDetailView) =>
                 account && record.creator.toLowerCase() === account.toLowerCase() ? '我' : '其他',
         },
-        { title: '截止时间', dataIndex: 'deadlineText', key: 'deadline', width: 200, align: 'center' },
+        { title: '截止时间', dataIndex: 'deadlineText', key: 'deadline', width: 150, align: 'center' },
         {
             title: '选项 & 累计下注 (ETH)',
             key: 'choices',
+            width: 250,
             align: 'center',
             render: (_: any, record: ActivityDetailView) => (
                 <div>
@@ -105,7 +128,7 @@ const LotteryPage = () => {
         {
             title: '获胜选项',
             key: 'winner',
-            width: 160,
+            width: 100,
             align: 'center',
             render: (_: any, record: ActivityDetailView) =>
                 record.settled ? (record.choices[record.winningChoice] ?? `索引 ${record.winningChoice}`) : '-',
@@ -114,7 +137,7 @@ const LotteryPage = () => {
             title: '奖池金额 (ETH)',
             dataIndex: 'totalPoolEth',
             key: 'totalPoolEth',
-            width: 140,
+            width: 150,
             align: 'center',
         },
         {
@@ -187,6 +210,37 @@ const LotteryPage = () => {
         color: '#ffffff',
     };
 
+    const myTicketColumns: ColumnsType<MyTicketDetail> = [
+        { title: '序号', dataIndex: 'order', key: 'order', width: 70, align: 'center' },
+        { title: '竞猜内容', dataIndex: 'content', key: 'content', width: 220, align: 'center' },
+        { title: '截止时间', dataIndex: 'deadlineText', key: 'deadlineText', width: 150, align: 'center' },
+        {
+            title: '选项 & 累计下注 (ETH)',
+            key: 'choicesSummary',
+            width: 250,
+            align: 'center',
+            render: (_: any, record: MyTicketDetail) => (
+                <div>
+                    {record.choices.map((choice, idx) => (
+                        <div key={idx}>{`${choice}：${record.choiceBetAmountsEth[idx] ?? '0'}`}</div>
+                    ))}
+                </div>
+            ),
+        },
+        { title: '我的选择', dataIndex: 'myChoiceName', key: 'myChoiceName', width: 140, align: 'center' },
+        { title: '下注金额 (ETH)', dataIndex: 'myBetAmountEth', key: 'myBetAmountEth', width: 140, align: 'center' },
+        { title: '获胜选项', dataIndex: 'winningChoiceName', key: 'winningChoiceName', width: 160, align: 'center' },
+        { title: '奖池金额 (ETH)', dataIndex: 'totalPoolEth', key: 'totalPoolEth', width: 150, align: 'center' },
+        {
+            title: '状态',
+            key: 'status',
+            width: 120,
+            align: 'center',
+            render: (_: any, record: MyTicketDetail) =>
+                record.settled ? <Tag color="green">已结算</Tag> : <Tag color="blue">进行中</Tag>,
+        },
+    ];
+
     useEffect(() => {
         // 页面加载后尝试读取已连接账户
         const init = async () => {
@@ -230,7 +284,76 @@ const LotteryPage = () => {
         fetchAllActivities();
     }, [easyBetContract]);
 
-    // 连接钱包（并尝试切换到本地链）
+    const refreshMyTickets = useCallback(async () => {
+        if (!easyBetContract || !account) {
+            setMyTicketDetails([]);
+            setMyTicketsLoading(false);
+            return;
+        }
+        setMyTicketsLoading(true);
+        try {
+            const tokenIds: string[] = await easyBetContract.methods.getTicketsByOwner(account).call();
+            if (!tokenIds.length) {
+                setMyTicketDetails([]);
+                return;
+            }
+
+            const detailList = await Promise.all(
+                tokenIds.map(async (tid: string, idx: number) => {
+                    const tokenId = Number(tid);
+                    const ticketRes: any = await easyBetContract.methods.tickets(tokenId).call();
+                    const activityId = Number(ticketRes.activityId ?? ticketRes[0]);
+                    const choiceIndex = Number(ticketRes.choiceIndex ?? ticketRes[1]);
+                    const amountWei = ticketRes.amount ?? ticketRes[2];
+                    const activityRes: any = await easyBetContract.methods.getActivityDetail(activityId).call();
+                    const {
+                        deadline,
+                        content,
+                        choices,
+                        totalPool,
+                        settled,
+                        winningChoice,
+                        choiceBetAmounts
+                    } = activityRes;
+                    const deadlineNum = Number(deadline);
+                    const choicesArray = (choices as string[]) ?? [];
+                    const choiceBetAmountsArray = (choiceBetAmounts as string[]) ?? [];
+                    const choiceBetAmountsEth = choiceBetAmountsArray.map((v) => web3.utils.fromWei(v, 'ether'));
+                    const myBetAmountEth = web3.utils.fromWei(amountWei, 'ether');
+                    const totalPoolEth = web3.utils.fromWei(totalPool, 'ether');
+                    const winningChoiceIndex = Number(winningChoice);
+                    return {
+                        tokenId,
+                        activityId,
+                        content,
+                        deadline: deadlineNum,
+                        deadlineText: new Date(deadlineNum * 1000).toLocaleString(),
+                        choices: choicesArray,
+                        choiceBetAmountsEth,
+                        myChoiceIndex: choiceIndex,
+                        myChoiceName: choicesArray[choiceIndex] ?? `选项 ${choiceIndex}`,
+                        myBetAmountEth,
+                        winningChoiceIndex,
+                        winningChoiceName: settled ? (choicesArray[winningChoiceIndex] ?? `选项 ${winningChoiceIndex}`) : '-',
+                        totalPoolEth,
+                        settled: Boolean(settled),
+                        order: idx + 1,
+                    } as MyTicketDetail;
+                })
+            );
+            setMyTicketDetails(detailList);
+        } catch (error) {
+            console.error('refreshMyTickets', error);
+            setMyTicketDetails([]);
+        } finally {
+            setMyTicketsLoading(false);
+        }
+    }, [account, easyBetContract]);
+
+    useEffect(() => {
+        refreshMyTickets();
+    }, [refreshMyTickets]);
+
     const connectWallet = async () => {
         // @ts-ignore
         const { ethereum } = window;
@@ -242,7 +365,7 @@ const LotteryPage = () => {
         try {
             if (ethereum.chainId !== GanacheTestChainId) {
                 try {
-                    await ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: GanacheTestChainId }] });
+                    await ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: GanacheTestChainId }] });
                 } catch (switchError: any) {
                     if (switchError.code === 4902) {
                         await ethereum.request({
@@ -254,18 +377,16 @@ const LotteryPage = () => {
             }
             await ethereum.request({ method: 'eth_requestAccounts' });
             const accounts = await ethereum.request({ method: 'eth_accounts' });
-
-            // 成功连接提示与状态更新
             const acct = accounts && accounts[0] ? accounts[0] : '';
             setAccount(acct);
             setStatus(acct ? '已连接' : '未找到账户');
             if (acct) {
                 message.success(`钱包已连接：${acct}`);
+                await refreshMyTickets();
             } else {
                 message.warning('已连接但未返回账户。请在钱包中解锁并授权本网站后重试。');
             }
         } catch (err: any) {
-            // 失败提示与状态更新
             const msg = err && err.message ? err.message : String(err);
             setStatus('连接失败');
             message.error('连接钱包失败：' + msg);
@@ -283,27 +404,31 @@ const LotteryPage = () => {
             const detailList = await Promise.all(
                 ids.map(async (id) => {
                     const res: any = await easyBetContract.methods.getActivityDetail(id).call();
-                    const creator = res[0] as string;
-                    const deadline = Number(res[1]);
-                    const choices = res[2] as string[];
-                    const initialPoolEth = web3.utils.fromWei(res[3], 'ether');
-                    const totalPoolEth = web3.utils.fromWei(res[4], 'ether');
-                    const settled = Boolean(res[5]);
-                    const winningChoice = Number(res[6]);
-                    const choiceBetAmountsEth = (res[7] as string[]).map((v) =>
-                        web3.utils.fromWei(v, 'ether')
-                    );
+                    const {
+                        creator,
+                        deadline,
+                        content,
+                        choices,
+                        initialPool,
+                        totalPool,
+                        settled,
+                        winningChoice,
+                        choiceBetAmounts
+                    } = res;
                     return {
                         id,
                         creator,
-                        deadline,
-                        deadlineText: new Date(deadline * 1000).toLocaleString(),
+                        deadline: Number(deadline),
+                        deadlineText: new Date(Number(deadline) * 1000).toLocaleString(),
+                        content,
                         choices,
-                        initialPoolEth,
-                        totalPoolEth,
+                        initialPoolEth: web3.utils.fromWei(initialPool, 'ether'),
+                        totalPoolEth: web3.utils.fromWei(totalPool, 'ether'),
                         settled,
-                        winningChoice,
-                        choiceBetAmountsEth,
+                        winningChoice: Number(winningChoice),
+                        choiceBetAmountsEth: (choiceBetAmounts as string[]).map((v) =>
+                            web3.utils.fromWei(v, 'ether')
+                        ),
                     } as ActivityDetailView;
                 })
             );
@@ -321,41 +446,45 @@ const LotteryPage = () => {
         try {
             const exists = await easyBetContract.methods.activityExists(id).call();
             if (!exists) {
-                message.warning('活动不存在或已被移除');
+                message.warning('竞猜不存在或已被移除');
                 setBetActivityDetail(null);
                 return;
             }
             const res: any = await easyBetContract.methods.getActivityDetail(id).call();
-            const creator = res[0] as string;
-            const deadline = Number(res[1]);
-            const choices = res[2] as string[];
-            const initialPoolEth = web3.utils.fromWei(res[3], 'ether');
-            const totalPoolEth = web3.utils.fromWei(res[4], 'ether');
-            const settled = Boolean(res[5]);
-            const winningChoice = Number(res[6]);
-            const choiceBetAmountsEth = (res[7] as string[]).map((v) => web3.utils.fromWei(v, 'ether'));
+            const {
+                creator,
+                deadline,
+                content,
+                choices,
+                initialPool,
+                totalPool,
+                settled,
+                winningChoice,
+                choiceBetAmounts
+            } = res;
             const now = Math.floor(Date.now() / 1000);
             if (settled) {
-                message.warning('该活动已结算，无法继续下注');
+                message.warning('该竞猜已结算，无法继续下注');
                 setBetActivityDetail(null);
                 return;
             }
-            if (deadline <= now) {
-                message.warning('该活动已超过截止时间，无法继续下注');
+            if (Number(deadline) <= now) {
+                message.warning('该竞猜已超过截止时间，无法继续下注');
                 setBetActivityDetail(null);
                 return;
             }
             const detail: ActivityDetailView = {
                 id,
                 creator,
-                deadline,
-                deadlineText: new Date(deadline * 1000).toLocaleString(),
+                deadline: Number(deadline),
+                deadlineText: new Date(Number(deadline) * 1000).toLocaleString(),
+                content,
                 choices,
-                initialPoolEth,
-                totalPoolEth,
+                initialPoolEth: web3.utils.fromWei(initialPool, 'ether'),
+                totalPoolEth: web3.utils.fromWei(totalPool, 'ether'),
                 settled,
-                winningChoice,
-                choiceBetAmountsEth,
+                winningChoice: Number(winningChoice),
+                choiceBetAmountsEth: (choiceBetAmounts as string[]).map((v) => web3.utils.fromWei(v, 'ether')),
             };
             setBetActivityDetail(detail);
             setBuyChoiceIndex((prev) => {
@@ -368,7 +497,7 @@ const LotteryPage = () => {
             });
         } catch (error: any) {
             console.error('fetchBetActivityDetail', error);
-            message.error(error?.message || '加载活动详情失败');
+            message.error(error?.message || '加载竞猜详情失败');
             setBetActivityDetail(null);
         } finally {
             setBetOptionsLoading(false);
@@ -386,7 +515,17 @@ const LotteryPage = () => {
                 return;
             }
             const res: any = await easyBetContract.methods.getActivityDetail(id).call();
-            const settled = Boolean(res[5]);
+            const {
+                creator,
+                deadline,
+                content,
+                choices,
+                initialPool,
+                totalPool,
+                settled,
+                winningChoice,
+                choiceBetAmounts
+            } = res;
             if (settled) {
                 if (!suppressSettledWarning) {
                     message.warning('这个竞猜已经结算啦，无需再次操作');
@@ -396,15 +535,16 @@ const LotteryPage = () => {
             }
             const detail: ActivityDetailView = {
                 id,
-                creator: res[0],
-                deadline: Number(res[1]),
-                deadlineText: new Date(Number(res[1]) * 1000).toLocaleString(),
-                choices: res[2],
-                initialPoolEth: web3.utils.fromWei(res[3], 'ether'),
-                totalPoolEth: web3.utils.fromWei(res[4], 'ether'),
+                creator,
+                deadline: Number(deadline),
+                deadlineText: new Date(Number(deadline) * 1000).toLocaleString(),
+                content,
+                choices,
+                initialPoolEth: web3.utils.fromWei(initialPool, 'ether'),
+                totalPoolEth: web3.utils.fromWei(totalPool, 'ether'),
                 settled,
-                winningChoice: Number(res[6]),
-                choiceBetAmountsEth: (res[7] as string[]).map((v) => web3.utils.fromWei(v, 'ether')),
+                winningChoice: Number(winningChoice),
+                choiceBetAmountsEth: (choiceBetAmounts as string[]).map((v) => web3.utils.fromWei(v, 'ether')),
             };
             setSettleActivityDetail(detail);
             setWinningChoiceIndex(detail.choices.length ? '0' : '');
@@ -424,7 +564,7 @@ const LotteryPage = () => {
         if (!value) return;
         const idNum = Number(value);
         if (!Number.isFinite(idNum) || idNum <= 0) {
-            message.warning('请输入合法的活动 ID');
+            message.warning('请输入合法的竞猜 ID');
             return;
         }
         await fetchBetActivityDetail(idNum);
@@ -458,11 +598,13 @@ const LotteryPage = () => {
         if (!account) { message.warning('请先连接钱包'); return; }
         if (!easyBetContract) { message.error('Contract not available'); return; }
         try {
+            const content = activityContent.trim();
+            if (!content) { message.warning('请填写竞猜内容'); return; }
             const choices = choicesCsv.split(',').map(s => s.trim()).filter(s => s.length);
             const deadline = Math.floor(Date.now() / 1000) + Number(deadlineMinutes) * 60;
             const value = web3.utils.toWei(initialPoolEth, 'ether');
             const receipt: TransactionReceipt = await easyBetContract.methods
-                .createActivity(choices, deadline)
+                .createActivity(content, choices, deadline)
                 .send({ from: account, value })
                 .on('receipt', (r: TransactionReceipt) => {
                     console.log('Receipt from callback:', r);
@@ -482,8 +624,9 @@ const LotteryPage = () => {
                     id = rv[0];
                 }
             }
-            setStatus('Activity created id: ' + id);
-            message.success(`活动创建成功，您的活动编号是 ${id}，祝您好运！`);
+            setStatus('竞猜创建 ID: ' + id);
+            message.success(`竞猜创建成功，编号 ${id}，祝您好运！`);
+            setActivityContent('A vs B');
             try {
                 if (easyBetContract) {
                     const allIds: string[] = await easyBetContract.methods.getAllActivityIds().call();
@@ -502,7 +645,7 @@ const LotteryPage = () => {
     const buyTicket = async () => {
         if (!account) { message.warning('请先连接钱包'); return; }
         if (!easyBetContract) { message.error('Contract not available'); return; }
-        if (!buyActivityId) { message.warning('请输入活动 ID'); return; }
+        if (!buyActivityId) { message.warning('请输入竞猜 ID'); return; }
         if (buyChoiceIndex === '') { message.warning('请先选择投注选项'); return; }
         try {
             const value = web3.utils.toWei(buyAmountEth, 'ether');
@@ -515,6 +658,7 @@ const LotteryPage = () => {
                 const ids: string[] = await easyBetContract.methods.getAllActivityIds().call();
                 await loadActivityDetails(ids.map((s: any) => Number(s)));
                 await fetchBetActivityDetail(Number(buyActivityId));
+                await refreshMyTickets();
             } catch (refreshError) {
                 console.error('refresh after buyTicket', refreshError);
             }
@@ -564,6 +708,7 @@ const LotteryPage = () => {
             await easyBetContract.methods.buyListedTicket(Number(buyListedTokenId)).send({ from: account, value: price });
             setStatus('Bought listed ticket ' + buyListedTokenId);
             message.success('Bought listed ticket ' + buyListedTokenId);
+            await refreshMyTickets();
         } catch (e: any) {
             message.error(e.message || String(e));
         }
@@ -577,13 +722,14 @@ const LotteryPage = () => {
         if (winningChoiceIndex === '') { message.warning('请先选择本次结算的胜出选项'); return; }
         try {
             await easyBetContract.methods.settleActivity(Number(settleActivityId), Number(winningChoiceIndex)).send({ from: account });
-            setStatus('Activity settled: ' + settleActivityId);
+            setStatus('竞猜结算: ' + settleActivityId);
             message.success(`竞猜结算完成，编号 ${settleActivityId}`);
             const ids: string[] = await easyBetContract.methods.getAllActivityIds().call();
             await loadActivityDetails(ids.map((s: any) => Number(s)));
             await fetchSettleActivityDetail(Number(settleActivityId), true);
             setSettleActivityDetail(null);
             setWinningChoiceIndex('');
+            await refreshMyTickets();
         } catch (e: any) {
             message.error(`结算失败：${e?.message || String(e)}`);
         }
@@ -591,16 +737,16 @@ const LotteryPage = () => {
 
     // 查询活动（选择数量 + 活动票据 id 列表）
     const getActivityInfo = async () => {
-        if (!queryActivityId) { message.warning('请输入活动 id'); return; }
+        if (!queryActivityId) { message.warning('请输入竞猜 id'); return; }
         if (!easyBetContract) { message.error('Contract not available'); return; }
         try {
             const exists = await easyBetContract.methods.activityExists(Number(queryActivityId)).call();
-            if (!exists) { message.warning('Activity not exists'); return; }
+            if (!exists) { message.warning('竞猜不存在'); return; }
             const choicesCount = await easyBetContract.methods.getChoicesCount(Number(queryActivityId)).call();
             const ticketIds = await easyBetContract.methods.getActivityTicketIds(Number(queryActivityId)).call();
             setActivityInfo({ choicesCount: Number(choicesCount), ticketIds });
-            setStatus('Fetched activity info');
-            message.success('Fetched activity info');
+            setStatus('已获取竞猜信息');
+            message.success('已获取竞猜信息');
         } catch (e: any) {
             message.error(e.message || String(e));
         }
@@ -703,10 +849,6 @@ const LotteryPage = () => {
             message.success('已接受报价并完成交易');
             // 刷新我的票据与市场挂单
             try {
-                const tickets = await easyBetContract.methods.getTicketsByOwner(account).call();
-                setMyTickets((tickets as string[]).map(t => Number(t)));
-            } catch (_) { /* ignore */ }
-            try {
                 const m = await easyBetContract.methods.getAllListings().call();
                 const tokenIds = m[0] as string[]; const sellers = m[1] as string[]; const prices = m[2] as string[];
                 setMarketListings(tokenIds.map((t, i) => ({ tokenId: Number(t), seller: sellers[i], priceWei: prices[i] })));
@@ -717,6 +859,7 @@ const LotteryPage = () => {
                     .map(a => ({ tokenId: a.tokenId, price: web3.utils.fromWei(a.priceWei, 'ether') }));
                 setMyListings(mine);
             } catch (_) { /* ignore */ }
+            await refreshMyTickets();
             // 刷新当前选中报价列表
             await fetchOffersForToken(tokenId);
         } catch (e: any) {
@@ -743,143 +886,162 @@ const LotteryPage = () => {
             </div>
 
             {/* ========== 1. 竞猜 ========== */}
-            <Divider>1.竞猜</Divider>
+            <Divider><span className="main-section-title">1.竞猜</span></Divider>
             <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                    <div style={{ fontWeight: 600 }}>已有竞猜</div>
-                    <Checkbox
-                        checked={showOnlyMyActivities}
-                        onChange={(e) => setShowOnlyMyActivities(e.target.checked)}
-                    >
-                        我的活动
-                    </Checkbox>
-                </div>
-                <Table
-                    style={{ marginBottom: 20 }}
-                    size="small"
-                    columns={activityColumns}
-                    dataSource={activityTableData}
-                    rowKey="id"
-                    pagination={false}
-                    loading={activitiesLoading}
-                    locale={{ emptyText: '暂无活动' }}
-                />
-
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>创建竞猜</div>
-                <div
-                    style={{
-                        marginBottom: 16,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 12,
-                        flexWrap: 'wrap'
-                    }}
-                >
-                    <span>选项 (逗号分隔)：</span>
-                    <Input value={choicesCsv} onChange={e => setChoicesCsv(e.target.value)} style={{ width: 180 }} />
-                    <span>截止时间（分钟后）：</span>
-                    <Input value={deadlineMinutes} onChange={e => setDeadlineMinutes(Number(e.target.value))} style={{ width: 50 }} />
-                    <span>初始奖池 (ETH)：</span>
-                    <Input value={initialPoolEth} onChange={e => setInitialPoolEth(e.target.value)} style={{ width: 50 }} />
-                    <Button type="primary" onClick={createActivity}>创建活动</Button>
-                </div>
-
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>下注</div>
-                <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <Input
-                        placeholder="活动ID"
-                        value={buyActivityId}
-                        onChange={(e) => handleBuyActivityIdChange(e.target.value)}
-                        style={{ width: 200 }}
-                    />
-                    <Input
-                        placeholder="金额 ETH"
-                        value={buyAmountEth}
-                        onChange={(e) => setBuyAmountEth(e.target.value)}
-                        style={{ width: 200 }}
-                    />
-                    <Button
-                        type="primary"
-                        onClick={buyTicket}
-                        disabled={betDisabled}
-                        style={betButtonStyle}
-                    >
-                        下注并铸票
-                    </Button>
-                </div>
-                {betActivityDetail && (
-                    <div style={{ marginBottom: 8, color: '#666' }}>
-                        当前奖池总额：{betActivityDetail.totalPoolEth} ETH
+                <div className="sub-section">
+                    <div className="sub-section-title-row">
+                        <span>已有竞猜</span>
+                        <Checkbox
+                            className="sub-section-title-right"
+                            checked={showOnlyMyActivities}
+                            onChange={(e) => setShowOnlyMyActivities(e.target.checked)}
+                        >
+                            只看我创建的竞猜
+                        </Checkbox>
                     </div>
-                )}
-                <Table
-                    size="small"
-                    columns={[
-                        { title: '选项编号', dataIndex: 'index', key: 'index', width: 100, align: 'center' },
-                        { title: '选项名称', dataIndex: 'name', key: 'name', align: 'center' },
-                        { title: '当前奖池 (ETH)', dataIndex: 'pool', key: 'pool', align: 'center' },
-                        { title: '预期收益倍数', dataIndex: 'profit', key: 'profit', align: 'center' },
-                    ]}
-                    dataSource={betOptionsData}
-                    pagination={false}
-                    loading={betOptionsLoading}
-                    rowSelection={betOptionsRowSelection}
-                    locale={{ emptyText: buyActivityId ? '暂无选项' : '请输入活动 ID 查看选项' }}
-                    style={{ marginBottom: 16 }}
-                />
-
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>结算竞猜</div>
-                <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <Input
-                        placeholder="活动ID"
-                        value={settleActivityId}
-                        onChange={(e) => handleSettleActivityIdChange(e.target.value)}
-                        style={{ width: 200 }}
+                    <Table
+                        bordered
+                        style={{ marginBottom: 20 }}
+                        size="small"
+                        columns={activityColumns}
+                        dataSource={activityTableData}
+                        rowKey="id"
+                        pagination={false}
+                        loading={activitiesLoading}
+                        locale={{ emptyText: '暂无竞猜' }}
                     />
-                    <Button
-                        type="primary"
-                        onClick={settleActivity}
-                        disabled={settleDisabled}
-                        style={settleButtonStyle}
-                    >
-                        结算活动
-                    </Button>
                 </div>
-                {settleActivityDetail && (
-                    <div style={{ marginBottom: 8, color: '#666' }}>
-                        当前奖池总额：{settleActivityDetail.totalPoolEth} ETH
+
+                <div className="sub-section">
+                    <div className="sub-section-title">创建竞猜</div>
+                    <div className="sub-section-body create-section-body">
+                        <div className="create-section-row">
+                            <span>竞猜内容：</span>
+                            <Input
+                                value={activityContent}
+                                onChange={e => setActivityContent(e.target.value)}
+                                style={{ width: 250 }}
+                            />
+                            <span>选项 (逗号分隔)：</span>
+                            <Input value={choicesCsv} onChange={e => setChoicesCsv(e.target.value)} style={{ width: 250 }} />
+                        </div>
+                        <div className="create-section-row">
+                            <span>截止时间（分钟后）：</span>
+                            <Input value={deadlineMinutes} onChange={e => setDeadlineMinutes(Number(e.target.value))} style={{ width: 200 }} />
+                            <span>初始奖池 (ETH)：</span>
+                            <Input value={initialPoolEth} onChange={e => setInitialPoolEth(e.target.value)} style={{ width: 200 }} />
+                            <Button type="primary" onClick={createActivity}>创建竞猜</Button>
+                        </div>
                     </div>
-                )}
-                <Table
-                    size="small"
-                    columns={[
-                        { title: '选项编号', dataIndex: 'index', key: 'index', width: 100, align: 'center' },
-                        { title: '选项名称', dataIndex: 'name', key: 'name', align: 'center' },
-                        { title: '当前奖池 (ETH)', dataIndex: 'pool', key: 'pool', align: 'center' },
-                    ]}
-                    dataSource={settleOptionsData}
-                    pagination={false}
-                    loading={settleOptionsLoading}
-                    rowSelection={settleOptionsRowSelection}
-                    locale={{ emptyText: settleActivityId ? '暂无选项' : '请输入活动 ID 查看选项' }}
-                    style={{ marginBottom: 16 }}
-                />
+                </div>
+
+                <div className="sub-section">
+                    <div className="sub-section-title">下注</div>
+                    <div className="sub-section-body">
+                        <Input
+                            placeholder="竞猜ID"
+                            value={buyActivityId}
+                            onChange={(e) => handleBuyActivityIdChange(e.target.value)}
+                            style={{ width: 200 }}
+                        />
+                        <Input
+                            placeholder="金额 ETH"
+                            value={buyAmountEth}
+                            onChange={(e) => setBuyAmountEth(e.target.value)}
+                            style={{ width: 200 }}
+                        />
+                        <Button
+                            type="primary"
+                            onClick={buyTicket}
+                            disabled={betDisabled}
+                            style={betButtonStyle}
+                        >
+                            下注并铸票
+                        </Button>
+                    </div>
+                    {betActivityDetail && (
+                        <div style={{ marginBottom: 8, color: '#666' }}>
+                            当前奖池总额：{betActivityDetail.totalPoolEth} ETH
+                        </div>
+                    )}
+                    <Table
+                        bordered
+                        size="small"
+                        columns={[
+                            { title: '选项编号', dataIndex: 'index', key: 'index', width: 100, align: 'center' },
+                            { title: '选项名称', dataIndex: 'name', key: 'name', align: 'center' },
+                            { title: '当前奖池 (ETH)', dataIndex: 'pool', key: 'pool', align: 'center' },
+                            { title: '预期收益倍数', dataIndex: 'profit', key: 'profit', align: 'center' },
+                        ]}
+                        dataSource={betOptionsData}
+                        pagination={false}
+                        loading={betOptionsLoading}
+                        rowSelection={betOptionsRowSelection}
+                        locale={{ emptyText: buyActivityId ? '暂无选项' : '请输入竞猜 ID 查看选项' }}
+                        style={{ marginBottom: 16 }}
+                    />
+
+                    <Divider dashed />
+
+                    <div className="sub-section-title">结算竞猜</div>
+                    <div className="sub-section-body">
+                        <Input
+                            placeholder="竞猜ID"
+                            value={settleActivityId}
+                            onChange={(e) => handleSettleActivityIdChange(e.target.value)}
+                            style={{ width: 200 }}
+                        />
+                        <Button
+                            type="primary"
+                            onClick={settleActivity}
+                            disabled={settleDisabled}
+                            style={settleButtonStyle}
+                        >
+                            结算活动
+                        </Button>
+                    </div>
+                    {settleActivityDetail && (
+                        <div style={{ marginBottom: 8, color: '#666' }}>
+                            当前奖池总额：{settleActivityDetail.totalPoolEth} ETH
+                        </div>
+                    )}
+                    <Table
+                        bordered
+                        size="small"
+                        columns={[
+                            { title: '选项编号', dataIndex: 'index', key: 'index', width: 100, align: 'center' },
+                            { title: '选项名称', dataIndex: 'name', key: 'name', align: 'center' },
+                            { title: '当前奖池 (ETH)', dataIndex: 'pool', key: 'pool', align: 'center' },
+                        ]}
+                        dataSource={settleOptionsData}
+                        pagination={false}
+                        loading={settleOptionsLoading}
+                        rowSelection={settleOptionsRowSelection}
+                        locale={{ emptyText: settleActivityId ? '暂无选项' : '请输入竞猜 ID 查看选项' }}
+                        style={{ marginBottom: 16 }}
+                    />
+                </div>
             </div>
 
             {/* ========== 2. 我的 ========== */}
-            <Divider>2. 我的（自动查询我创建的活动 & 我持有的票）</Divider>
+            <Divider><span className="main-section-title">2. 我的</span></Divider>
             <div>
-                <div style={{ marginTop: 12 }}>
-                    <div>我持有的票：</div>
-                    {myTickets.length === 0 ? <div>-</div> : (
-                        <List size="small" bordered dataSource={myTickets} renderItem={(tid) => (
-                            <List.Item>{`Ticket ${tid}`}</List.Item>
-                        )} />
-                    )}
+                <div className="sub-section">
+                    <div className="sub-section-title">我持有的票：</div>
+                    <Table
+                        bordered
+                        size="small"
+                        columns={myTicketColumns}
+                        dataSource={myTicketDetails}
+                        rowKey="tokenId"
+                        pagination={false}
+                        loading={myTicketsLoading}
+                        locale={{ emptyText: account ? '暂无票据' : '请先连接钱包' }}
+                    />
                 </div>
 
-                <div style={{ marginTop: 12 }}>
-                    <div>我的挂单（来自市场过滤）：</div>
+                <div className="sub-section">
+                    <div className="sub-section-title">我的挂单（来自市场过滤）：</div>
                     {myListings.length === 0 ? <div>-</div> : (
                         <List size="small" bordered dataSource={myListings} renderItem={(it) => (
                             <List.Item>{`Token ${it.tokenId} - Price ${it.price} ETH`}</List.Item>
@@ -889,11 +1051,10 @@ const LotteryPage = () => {
             </div>
 
             {/* ========== 3. 交易 ========== */}
-            <Divider>3. 交易（市场挂单 / 报价 / 我的交易）</Divider>
+            <Divider><span className="main-section-title">3. 交易</span></Divider>
             <div>
-                {/* 市场挂单展示 */}
-                <div>
-                    <div>市场挂单：</div>
+                <div className="sub-section">
+                    <div className="sub-section-title">市场挂单：</div>
                     {marketListings.length === 0 ? <div>-</div> : (
                         <List size="small" bordered dataSource={marketListings} renderItem={(it) => (
                             <List.Item actions={[
@@ -906,16 +1067,17 @@ const LotteryPage = () => {
                     )}
                 </div>
 
-                {/* 报价区域（对选定 tokenId 提交报价） */}
-                <div style={{ marginTop: 12 }}>
-                    <Input placeholder="tokenId" value={offerTokenId} onChange={e => setOfferTokenId(e.target.value)} style={{ width: 200 }} />
-                    <Input placeholder="报价 ETH" value={offerPriceEth} onChange={e => setOfferPriceEth(e.target.value)} style={{ width: 200, marginLeft: 8 }} />
-                    <Button onClick={() => makeOffer(Number(offerTokenId), offerPriceEth)} style={{ marginLeft: 8 }}>提交报价</Button>
+                <div className="sub-section">
+                    <div className="sub-section-title">报价</div>
+                    <div className="sub-section-body">
+                        <Input placeholder="tokenId" value={offerTokenId} onChange={e => setOfferTokenId(e.target.value)} style={{ width: 200 }} />
+                        <Input placeholder="报价 ETH" value={offerPriceEth} onChange={e => setOfferPriceEth(e.target.value)} style={{ width: 200, marginLeft: 8 }} />
+                        <Button onClick={() => makeOffer(Number(offerTokenId), offerPriceEth)} style={{ marginLeft: 8 }}>提交报价</Button>
+                    </div>
                 </div>
 
-                {/* 查看并操作报价（如果已加载） */}
-                <div style={{ marginTop: 12 }}>
-                    <div>已选挂单报价：</div>
+                <div className="sub-section">
+                    <div className="sub-section-title">已选挂单报价：</div>
                     {selectedListingOffers ? (
                         <List size="small" bordered dataSource={selectedListingOffers.bidders.map((b, i) => ({ b, p: selectedListingOffers.prices[i], idx: i }))} renderItem={(it) => (
                             <List.Item actions={[
@@ -930,9 +1092,6 @@ const LotteryPage = () => {
                     ) : <div>-</div>}
                 </div>
             </div>
-
-            <Divider>状态</Divider>
-            <div>{status}</div>
         </div>
     );
 };

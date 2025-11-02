@@ -26,6 +26,7 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         address creator; // 创建者（公证人），通常是合约 owner
         uint256 deadline; // 截止时间（timestamp），在此之前可下注
         string[] choices; // 选项列表
+        string content; // 竞猜内容
         uint256 initialPool; // 创建时公证人注入的初始奖池（wei）
         uint256 totalPool; // 当前总奖池（包括玩家下注）
         uint256[] ticketIds; // 参与该活动的所有票据 id（用于结算时遍历）
@@ -58,6 +59,25 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         bool exists;
     }
     mapping(uint256 => Offer[]) private _offers;
+
+    function _addTicketToOwner(address owner, uint256 tokenId) private {
+        uint256 length = _ownerTickets[owner].length;
+        _ownerTickets[owner].push(tokenId);
+        _ownerTicketIndex[tokenId] = length + 1;
+    }
+
+    function _removeTicketFromOwner(address owner, uint256 tokenId) private {
+        uint256 index = _ownerTicketIndex[tokenId];
+        if (index == 0) return;
+        uint256 lastIndex = _ownerTickets[owner].length - 1;
+        uint256 lastTokenId = _ownerTickets[owner][lastIndex];
+        if (index - 1 != lastIndex) {
+            _ownerTickets[owner][index - 1] = lastTokenId;
+            _ownerTicketIndex[lastTokenId] = index;
+        }
+        _ownerTickets[owner].pop();
+        delete _ownerTicketIndex[tokenId];
+    }
 
     // 事件
 
@@ -131,12 +151,15 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
     // ========== 活动管理（仅合约 owner / 公证人） ==========
 
     /// @notice 创建一个竞猜活动，并注入初始奖池（payable）
+    /// @param content 竞猜内容
     /// @param choices 选项数组，至少两个选项
     /// @param deadline 截止时间（unix timestamp），必须大于当前时间
     function createActivity(
+        string calldata content,
         string[] calldata choices,
         uint256 deadline
     ) external payable onlyOwner returns (uint256) {
+        require(bytes(content).length > 0, "Content required");
         require(choices.length >= 2, "At least two options required");
         require(deadline > block.timestamp, "Deadline must be in the future");
         require(msg.value > 0, "Initial pool must be provided");
@@ -147,6 +170,7 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
 
         Activity storage a = activities[newActivityId];
         a.creator = msg.sender;
+        a.content = content;
         a.deadline = deadline;
         for (uint i = 0; i < choices.length; i++) {
             a.choices.push(choices[i]);
@@ -172,6 +196,7 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
     ) external payable returns (uint256) {
         require(activityExists(activityId), "Activity does not exist");
         Activity storage a = activities[activityId];
+        require(!a.settled, "Activity already settled");
         require(block.timestamp < a.deadline, "Activity has ended");
         require(choiceIndex < a.choices.length, "Invalid choice index");
         require(msg.value > 0, "Bet amount must be greater than 0");
@@ -405,6 +430,7 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         returns (
             address creator,
             uint256 deadline,
+            string memory content,
             string[] memory choices,
             uint256 initialPool,
             uint256 totalPool,
@@ -417,6 +443,7 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         Activity storage a = activities[activityId];
         creator = a.creator;
         deadline = a.deadline;
+        content = a.content;
         initialPool = a.initialPool;
         totalPool = a.totalPool;
         settled = a.settled;
@@ -535,4 +562,19 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
 
     // fallback / receive：合约可以接收 ETH（如结算后剩余的分配余数）
     receive() external payable {}
+
+    function _update(
+        address to,
+        uint256 tokenId,
+        address auth
+    ) internal override returns (address) {
+        address from = super._update(to, tokenId, auth);
+        if (from != address(0)) {
+            _removeTicketFromOwner(from, tokenId);
+        }
+        if (to != address(0)) {
+            _addTicketToOwner(to, tokenId);
+        }
+        return from;
+    }
 }

@@ -113,3 +113,88 @@ body {
     background: #ffecec;
     border: 1px solid #f5a1a1;
 }
+
+/* 主标题样式 */
+.main-section-title {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+/* 子模块虚线分隔 */
+.sub-section {
+    border-top: 1px dashed #d9d9d9;
+    padding-top: 16px;
+    margin-top: 20px;
+}
+
+/* 子模块首段无分隔 */
+.sub-section:first-of-type {
+    border-top: none;
+    padding-top: 0;
+    margin-top: 0;
+}
+
+/* 子模块间间距 */
+.sub-section+.sub-section {
+    margin-top: 24px;
+}
+
+/* 子模块标题样式 */
+.sub-section-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+/* 子模块标题行样式 */
+.sub-section-title-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+/* 子模块标题行文字 */
+.sub-section-title-row span {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+/* 子模块标题右对齐样式 */
+.sub-section-title-right {
+    margin-left: auto;
+}
+
+/* 子模块内容样式 */
+.sub-section-body {
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+/* 竞猜表单样式 */
+.create-section-body {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+}
+
+.create-section-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+/* 表格样式 */
+.ant-table-wrapper .ant-table.ant-table-bordered {
+    border: 1px solid #8c8c8c;
+}
+
+.ant-table-bordered .ant-table-cell,
+.ant-table-bordered .ant-table-thead>tr>th {
+    border-color: #8c8c8c;
+}
