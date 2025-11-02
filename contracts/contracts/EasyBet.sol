@@ -31,6 +31,7 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         uint256[] ticketIds; // 参与该活动的所有票据 id（用于结算时遍历）
         bool settled; // 是否已结算
         uint256 winningChoice; // 结算后记录的胜出选项索引
+        uint256[] choiceBetAmounts; // 每个选项累计的下注金额（wei）
     }
 
     // 二级市场挂单信息
@@ -44,6 +45,19 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
     mapping(uint256 => Activity) public activities; // activityId => Activity
     mapping(uint256 => Ticket) public tickets; // tokenId => Ticket
     mapping(uint256 => Listing) public listings; // tokenId => Listing
+
+    // 维护持有人 -> tokenId 列表，便于前端查询用户的票据
+    mapping(address => uint256[]) private _ownerTickets;
+    // tokenId -> 在_ownerTickets[array] 中的位置（index），存储 index + 1（0 表示不存在）
+    mapping(uint256 => uint256) private _ownerTicketIndex;
+
+    // 报价结构体与存储（每个 tokenId 对应一组报价）
+    struct Offer {
+        address bidder;
+        uint256 price; // wei
+        bool exists;
+    }
+    mapping(uint256 => Offer[]) private _offers;
 
     // 事件
 
@@ -91,6 +105,24 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         uint256 totalPool // 最终奖池
     );
 
+    // 新增事件：报价 / 撤回报价 / 接受报价
+    event OfferPlaced(
+        uint256 indexed tokenId,
+        address indexed bidder,
+        uint256 price
+    );
+    event OfferWithdrawn(
+        uint256 indexed tokenId,
+        address indexed bidder,
+        uint256 price
+    );
+    event OfferAccepted(
+        uint256 indexed tokenId,
+        address indexed seller,
+        address indexed buyer,
+        uint256 price
+    );
+
     // 将初始 owner 传给 OpenZeppelin v5 的 Ownable 基类
     constructor() ERC721("EasyBetTicket", "EBT") Ownable(msg.sender) {
         // 构造函数，ERC721 名称与简称，Ownable 初始化为部署者
@@ -118,6 +150,8 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         a.deadline = deadline;
         for (uint i = 0; i < choices.length; i++) {
             a.choices.push(choices[i]);
+            // 初始化每个选项的累计下注为 0
+            a.choiceBetAmounts.push(0);
         }
         a.initialPool = msg.value;
         a.totalPool = msg.value;
@@ -125,14 +159,6 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
 
         emit ActivityCreated(newActivityId, msg.value, deadline);
         return newActivityId;
-    }
-
-    /// @notice 公证人可向已有活动追加资金
-    function fundActivity(uint256 activityId) external payable onlyOwner {
-        require(activityExists(activityId), "Activity does not exist");
-        require(!activities[activityId].settled, "Activity already settled");
-        require(msg.value > 0, "Amount must be greater than 0");
-        activities[activityId].totalPool += msg.value;
     }
 
     // ========== 下注与票据铸造 ==========
@@ -162,6 +188,9 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
             amount: msg.value
         });
         a.ticketIds.push(newTokenId);
+        // 更新对应选项累计下注金额
+        // (createActivity 已初始化 a.choiceBetAmounts 长度与 choices 一致)
+        a.choiceBetAmounts[choiceIndex] += msg.value;
         a.totalPool += msg.value;
 
         emit BetPlaced(newTokenId, activityId, msg.value, msg.sender);
@@ -238,32 +267,35 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         a.settled = true;
         a.winningChoice = winningChoice;
 
-        // 统计胜出票据数（按当前持有人）
+        // 计算胜出选项的总下注金额（仅统计当前持有者）
         uint256 winnersCount = 0;
+        uint256 totalWinningAmount = 0;
         for (uint i = 0; i < a.ticketIds.length; i++) {
             uint256 tid = a.ticketIds[i];
             if (tickets[tid].choiceIndex == winningChoice) {
                 address holder = ownerOf(tid);
-                // 仅计数仍存在的持有人（ownerOf 不会 revert，因为 token 已存在）
                 if (holder != address(0)) {
                     winnersCount++;
+                    totalWinningAmount += tickets[tid].amount;
                 }
             }
         }
 
-        if (winnersCount == 0) {
-            // 若无人胜出，资金仍保留在合约中（可由公证人另行处理或留作平台基金）
+        if (winnersCount == 0 || totalWinningAmount == 0) {
+            // 若无人胜出或胜出选项的总下注为 0，资金仍保留在合约中
             emit ActivitySettled(activityId, winningChoice, 0, a.totalPool);
             return;
         }
 
-        uint256 share = a.totalPool / winnersCount;
-        // 向每个胜出票据当前持有人支付份额
+        // 按照每张票的下注占胜出选项总下注的比例分配奖池
         for (uint i = 0; i < a.ticketIds.length; i++) {
             uint256 tid = a.ticketIds[i];
             if (tickets[tid].choiceIndex == winningChoice) {
                 address payable holder = payable(ownerOf(tid));
-                // 若发送失败，这里会 revert，从而保证所有赢家都能收到款项或回滚（能保证一致性）
+                if (holder == address(0)) continue;
+                uint256 betAmount = tickets[tid].amount;
+                // share = totalPool * betAmount / totalWinningAmount
+                uint256 share = (a.totalPool * betAmount) / totalWinningAmount;
                 (bool ok, ) = holder.call{value: share}("");
                 require(ok, "Failed to send prize to winner");
             }
@@ -277,52 +309,207 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         );
     }
 
-    // ========== 只读辅助（补充便于前端使用的接口） ==========
+    // ========== 新增的只读接口 ==========
 
+    /// @notice 返回某地址拥有的所有 ticket ids（按当前持有人）
+    function getTicketsByOwner(
+        address owner
+    ) external view returns (uint256[] memory) {
+        return _ownerTickets[owner];
+    }
+
+    /// @notice 判断 activityId 是否存在（用于前端与内部校验）
     function activityExists(uint256 activityId) public view returns (bool) {
         return activityId > 0 && activityId <= _activityIds;
     }
 
-    /// @notice 返回最新创建的 activityId（便于前端在事件缺失时查询）
-    function getLatestActivityId() external view returns (uint256) {
-        return _activityIds;
-    }
-
-    function getChoicesCount(
-        uint256 activityId
-    ) external view returns (uint256) {
-        require(activityExists(activityId), "Activity does not exist");
-        return activities[activityId].choices.length;
-    }
-
-    /// @notice 查看某活动所有票据 id（注意数组可能较大）
-    function getActivityTicketIds(
-        uint256 activityId
+    /// @notice 返回某地址创建的所有 activity ids（用于前端自动查询“我创建的活动”）
+    function getActivitiesByCreator(
+        address creator
     ) external view returns (uint256[] memory) {
-        require(activityExists(activityId), "Activity does not exist");
-        return activities[activityId].ticketIds;
+        uint256 count = 0;
+        for (uint256 i = 1; i <= _activityIds; i++) {
+            if (activities[i].creator == creator) {
+                count++;
+            }
+        }
+        uint256[] memory res = new uint256[](count);
+        uint256 idx = 0;
+        for (uint256 i = 1; i <= _activityIds; i++) {
+            if (activities[i].creator == creator) {
+                res[idx++] = i;
+            }
+        }
+        return res;
     }
 
-    /// @notice 查看票据详细信息
-    function getTicketInfo(
+    /// @notice 返回所有已创建的 activity ids（1 开始）
+    function getAllActivityIds() external view returns (uint256[] memory ids) {
+        ids = new uint256[](_activityIds);
+        for (uint256 i = 0; i < _activityIds; i++) {
+            ids[i] = i + 1;
+        }
+    }
+
+    /// @notice 返回当前合约上所有存在的挂单（tokenId / seller / price），便于前端显示市场
+    function getAllListings()
+        external
+        view
+        returns (
+            uint256[] memory tokenIds,
+            address[] memory sellers,
+            uint256[] memory prices
+        )
+    {
+        uint256 cnt = 0;
+        for (uint256 i = 1; i <= _tokenIds; i++) {
+            if (listings[i].exists) cnt++;
+        }
+        tokenIds = new uint256[](cnt);
+        sellers = new address[](cnt);
+        prices = new uint256[](cnt);
+        uint256 j = 0;
+        for (uint256 i = 1; i <= _tokenIds; i++) {
+            if (listings[i].exists) {
+                tokenIds[j] = i;
+                sellers[j] = listings[i].seller;
+                prices[j] = listings[i].price;
+                j++;
+            }
+        }
+    }
+
+    /// @notice 返回某 tokenId 的所有报价（bidders 与 prices 数组）
+    function getOffers(
         uint256 tokenId
     )
         external
         view
-        returns (uint256 activityId, uint256 choiceIndex, uint256 amount)
+        returns (address[] memory bidders, uint256[] memory prices)
     {
-        // 不调用 _exists，改为使用 tickets 映射判断票据是否存在（amount != 0）
-        require(tickets[tokenId].amount != 0, "Ticket does not exist");
-        Ticket storage t = tickets[tokenId];
-        return (t.activityId, t.choiceIndex, t.amount);
+        Offer[] storage arr = _offers[tokenId];
+        bidders = new address[](arr.length);
+        prices = new uint256[](arr.length);
+        for (uint256 i = 0; i < arr.length; i++) {
+            bidders[i] = arr[i].bidder;
+            prices[i] = arr[i].price;
+        }
     }
 
-    /// @notice 查看挂单信息
-    function getListing(
-        uint256 tokenId
-    ) external view returns (address seller, uint256 price, bool exists) {
-        Listing storage l = listings[tokenId];
-        return (l.seller, l.price, l.exists);
+    /// @notice 返回活动的详细信息（不包含 creator 与 ticketIds），包括每个选项的累计下注金额
+    function getActivityDetail(
+        uint256 activityId
+    )
+        external
+        view
+        returns (
+            address creator,
+            uint256 deadline,
+            string[] memory choices,
+            uint256 initialPool,
+            uint256 totalPool,
+            bool settled,
+            uint256 winningChoice,
+            uint256[] memory choiceBetAmounts
+        )
+    {
+        require(activityExists(activityId), "Activity does not exist");
+        Activity storage a = activities[activityId];
+        creator = a.creator;
+        deadline = a.deadline;
+        initialPool = a.initialPool;
+        totalPool = a.totalPool;
+        settled = a.settled;
+        winningChoice = a.winningChoice;
+
+        // 复制 choices 到 memory
+        uint256 cLen = a.choices.length;
+        choices = new string[](cLen);
+        for (uint256 i = 0; i < cLen; i++) {
+            choices[i] = a.choices[i];
+        }
+
+        // 复制 choiceBetAmounts 到 memory
+        uint256 mLen = a.choiceBetAmounts.length;
+        choiceBetAmounts = new uint256[](mLen);
+        for (uint256 j = 0; j < mLen; j++) {
+            choiceBetAmounts[j] = a.choiceBetAmounts[j];
+        }
+    }
+
+    // ========== 报价相关操作 ==========
+
+    /// @notice 对某个 token 提交报价（需附带 ETH 作为出价担保）
+    function makeOffer(uint256 tokenId) external payable {
+        require(msg.value > 0, "Offer must be > 0");
+        // 保存报价（无法保证唯一，允许同一个用户对同一 token 多次出价）
+        Offer memory o = Offer({
+            bidder: msg.sender,
+            price: msg.value,
+            exists: true
+        });
+        _offers[tokenId].push(o);
+        emit OfferPlaced(tokenId, msg.sender, msg.value);
+    }
+
+    /// @notice 撤回自己对某 token 的某个报价（按 index）
+    function withdrawOffer(
+        uint256 tokenId,
+        uint256 index
+    ) external nonReentrant {
+        Offer[] storage arr = _offers[tokenId];
+        require(index < arr.length, "Invalid index");
+        Offer storage o = arr[index];
+        require(o.exists, "Offer not exists");
+        require(o.bidder == msg.sender, "Not your offer");
+        uint256 price = o.price;
+
+        // 删除该报价：swap with last, pop
+        uint256 last = arr.length - 1;
+        if (index != last) {
+            arr[index] = arr[last];
+        }
+        arr.pop();
+
+        // 退回出价款项
+        (bool sent, ) = payable(msg.sender).call{value: price}("");
+        require(sent, "Refund failed");
+        emit OfferWithdrawn(tokenId, msg.sender, price);
+    }
+
+    /// @notice 卖家接受某个报价（index），将 token 转给出价者并把价款转给卖家（需要卖家已批准合约可转移 token）
+    function acceptOffer(uint256 tokenId, uint256 index) external nonReentrant {
+        require(ownerOf(tokenId) == msg.sender, "Only token owner can accept");
+        Offer[] storage arr = _offers[tokenId];
+        require(index < arr.length, "Invalid index");
+        Offer memory o = arr[index];
+        require(o.exists, "Offer not exists");
+
+        address seller = msg.sender;
+        address buyer = o.bidder;
+        uint256 price = o.price;
+
+        // 合约必须可以从 seller 转移 token（seller 需要 approve 给合约 或 setApprovalForAll）
+        require(
+            _isApprovedOrOwnerForListing(tokenId, seller),
+            "Contract not approved to transfer token"
+        );
+
+        // 删除该 offer（swap-pop）
+        uint256 last = arr.length - 1;
+        if (index != last) {
+            arr[index] = arr[last];
+        }
+        arr.pop();
+
+        // 转移 token（合约被批准）
+        _safeTransfer(seller, buyer, tokenId, "");
+
+        // 支付给卖家
+        (bool sent, ) = payable(seller).call{value: price}("");
+        require(sent, "Transfer to seller failed");
+
+        emit OfferAccepted(tokenId, seller, buyer, price);
     }
 
     // ========== 内部与辅助函数 ==========

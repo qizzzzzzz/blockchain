@@ -8,7 +8,7 @@ body {
 
 /* 主容器 */
 .container {
-    width: 600px;
+    width: 1000px;
     min-height: 400px;
     /* 改为 min-height，避免固定高度导致裁剪 */
     background: #F2F3F4;
@@ -53,19 +53,63 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin-bottom: 12px;
+    margin: 0 auto 12px auto;
+    justify-content: center;
+    /* 居中对齐 logo + 标题 */
 }
 
-/* logo 图片样式（放在 src/pages/home/logo.png） */
+/* logo 图片样式 */
 .logo {
-    width: 48px;
-    height: 48px;
+    width: 56px;
+    height: 56px;
     object-fit: contain;
 }
 
-/* 标题样式，字体稍大 */
+/* 标题样式，字体更大 */
 .title {
-    font-size: 28px;
-    font-weight: 600;
+    font-size: 32px;
+    font-weight: 700;
     color: #111;
+}
+
+/* 账户行：账户信息 + 状态 + 按钮 同一行 */
+.account-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    justify-content: center;
+    /* 居中对齐整行 */
+    margin-top: 8px;
+}
+
+/* 账户文字 */
+.account-text {
+    font-size: 18px;
+}
+
+/* 账户值突出显示 */
+.account-value {
+    font-weight: 600;
+    margin-left: 6px;
+    font-size: 18px;
+}
+
+/* 连接状态指示 */
+.status {
+    padding: 6px 10px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.status.connected {
+    color: #0a0;
+    background: #e6ffea;
+    border: 1px solid #7ce27a;
+}
+
+.status.disconnected {
+    color: #c00;
+    background: #ffecec;
+    border: 1px solid #f5a1a1;
 }
