@@ -90,9 +90,10 @@ const LotteryPage = () => {
     const [myTicketsLoading, setMyTicketsLoading] = useState<boolean>(false);
     const [myListings, setMyListings] = useState<{ tokenId: number; price: string }[]>([]);
     const [marketListings, setMarketListings] = useState<{ tokenId: number; seller: string; priceWei: string }[]>([]);
-    const [selectedListingOffers, setSelectedListingOffers] = useState<{ bidders: string[]; prices: string[] } | null>(null);
-    const [offerTokenId, setOfferTokenId] = useState<string>('');
-    const [offerPriceEth, setOfferPriceEth] = useState<string>('0.01');
+    // 移除：买家报价相关状态
+    // const [selectedListingOffers, setSelectedListingOffers] = useState<{ bidders: string[]; prices: string[] } | null>(null);
+    // const [offerTokenId, setOfferTokenId] = useState<string>('');
+    // const [offerPriceEth, setOfferPriceEth] = useState<string>('0.01');
     const [allActivityDetails, setAllActivityDetails] = useState<ActivityDetailView[]>([]);
     const [showOnlyMyActivities, setShowOnlyMyActivities] = useState<boolean>(false);
     const [activitiesLoading, setActivitiesLoading] = useState<boolean>(false);
@@ -353,6 +354,41 @@ const LotteryPage = () => {
     useEffect(() => {
         refreshMyTickets();
     }, [refreshMyTickets]);
+
+    // 新增：加载市场挂单（仅 Listing）
+    const refreshMarketListings = useCallback(async () => {
+        if (!easyBetContract) {
+            setMarketListings([]);
+            setMyListings([]);
+            return;
+        }
+        try {
+            const m = await easyBetContract.methods.getAllListings().call();
+            const tokenIds = m[0] as string[];
+            const sellers = m[1] as string[];
+            const prices = m[2] as string[];
+            const items = tokenIds.map((t, i) => ({
+                tokenId: Number(t),
+                seller: sellers[i],
+                priceWei: prices[i],
+            }));
+            setMarketListings(items);
+            if (account) {
+                const mine = items
+                    .filter((a) => a.seller.toLowerCase() === account.toLowerCase())
+                    .map((a) => ({ tokenId: a.tokenId, price: web3.utils.fromWei(a.priceWei, 'ether') }));
+                setMyListings(mine);
+            } else {
+                setMyListings([]);
+            }
+        } catch (e) {
+            console.error('refreshMarketListings', e);
+        }
+    }, [easyBetContract, account]);
+
+    useEffect(() => {
+        refreshMarketListings();
+    }, [refreshMarketListings]);
 
     const connectWallet = async () => {
         // @ts-ignore
@@ -679,36 +715,41 @@ const LotteryPage = () => {
             await easyBetContract.methods.listTicket(tokenId, web3.utils.toWei(listPriceEth, 'ether')).send({ from: account });
             setStatus('Ticket listed: ' + tokenId);
             message.success('Ticket listed: ' + tokenId);
+            await refreshMarketListings();
         } catch (e: any) {
             message.error(e.message || String(e));
         }
     };
 
-    // 取消挂单
-    const cancelListing = async () => {
+    // 取消挂单（支持直接传入 tokenId）
+    const cancelListing = async (tokenIdParam?: number) => {
         if (!account) { message.warning('请先连接钱包'); return; }
         if (!easyBetContract) { message.error('Contract not available'); return; }
         try {
-            await easyBetContract.methods.cancelListing(Number(cancelTokenId)).send({ from: account });
-            setStatus('Listing canceled: ' + cancelTokenId);
-            message.success('Listing canceled: ' + cancelTokenId);
+            const id = tokenIdParam ?? Number(cancelTokenId);
+            await easyBetContract.methods.cancelListing(id).send({ from: account });
+            setStatus('Listing canceled: ' + id);
+            message.success('Listing canceled: ' + id);
+            await refreshMarketListings();
         } catch (e: any) {
             message.error(e.message || String(e));
         }
     };
 
-    // 购买挂单票据（需要发送 exact price）
-    const buyListedTicket = async () => {
+    // 购买挂单票据（支持直接传入 tokenId，需发送 exact price）
+    const buyListedTicket = async (tokenIdParam?: number) => {
         if (!account) { message.warning('请先连接钱包'); return; }
         if (!easyBetContract) { message.error('Contract not available'); return; }
         try {
-            const l = await easyBetContract.methods.getListing(Number(buyListedTokenId)).call();
+            const id = tokenIdParam ?? Number(buyListedTokenId);
+            const l = await easyBetContract.methods.getListing(id).call();
             if (!l || !l.exists) { message.warning('No listing'); return; }
             const price = l.price;
-            await easyBetContract.methods.buyListedTicket(Number(buyListedTokenId)).send({ from: account, value: price });
-            setStatus('Bought listed ticket ' + buyListedTokenId);
-            message.success('Bought listed ticket ' + buyListedTokenId);
+            await easyBetContract.methods.buyListedTicket(id).send({ from: account, value: price });
+            setStatus('Bought listed ticket ' + id);
+            message.success('Bought listed ticket ' + id);
             await refreshMyTickets();
+            await refreshMarketListings();
         } catch (e: any) {
             message.error(e.message || String(e));
         }
@@ -721,12 +762,17 @@ const LotteryPage = () => {
         if (!settleActivityId) { message.warning('请先填写需要结算的竞猜编号'); return; }
         if (winningChoiceIndex === '') { message.warning('请先选择本次结算的胜出选项'); return; }
         try {
-            await easyBetContract.methods.settleActivity(Number(settleActivityId), Number(winningChoiceIndex)).send({ from: account });
+            await easyBetContract.methods
+                .settleActivity(Number(settleActivityId), Number(winningChoiceIndex))
+                .send({ from: account });
+
             setStatus('竞猜结算: ' + settleActivityId);
             message.success(`竞猜结算完成，编号 ${settleActivityId}`);
+
             const ids: string[] = await easyBetContract.methods.getAllActivityIds().call();
             await loadActivityDetails(ids.map((s: any) => Number(s)));
             await fetchSettleActivityDetail(Number(settleActivityId), true);
+
             setSettleActivityDetail(null);
             setWinningChoiceIndex('');
             await refreshMyTickets();
@@ -795,78 +841,11 @@ const LotteryPage = () => {
     };
 
     // ========== 报价相关：合约调用实现 ==========
-    // 获取某 token 的所有报价（调用合约 getOffers）
-    const fetchOffersForToken = async (tokenId: number) => {
-        if (!easyBetContract) { message.error('Contract not available'); return; }
-        try {
-            const res = await easyBetContract.methods.getOffers(tokenId).call();
-            const bidders = res[0] as string[]; // addresses
-            const pricesWei = res[1] as string[]; // wei strings
-            const prices = pricesWei.map((p: string) => web3.utils.fromWei(p, 'ether'));
-            setSelectedListingOffers({ bidders, prices });
-            setStatus(`Fetched ${bidders.length} offers for token ${tokenId}`);
-        } catch (e: any) {
-            console.error('fetchOffersForToken', e);
-            message.error(e.message || '获取报价失败');
-        }
-    };
-
-    // 提交报价（调用合约 makeOffer 并附带 ETH）
-    const makeOffer = async (tokenId: number, priceEth: string) => {
-        if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
-        try {
-            const value = web3.utils.toWei(priceEth, 'ether');
-            await easyBetContract.methods.makeOffer(tokenId).send({ from: account, value });
-            message.success('报价已提交');
-            await fetchOffersForToken(tokenId);
-        } catch (e: any) {
-            console.error('makeOffer', e);
-            message.error(e.message || String(e));
-        }
-    };
-
-    // 撤回自己的报价（调用合约 withdrawOffer）
-    const withdrawOffer = async (tokenId: number, index: number) => {
-        if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
-        try {
-            await easyBetContract.methods.withdrawOffer(tokenId, index).send({ from: account });
-            message.success('报价已撤回');
-            await fetchOffersForToken(tokenId);
-        } catch (e: any) {
-            console.error('withdrawOffer', e);
-            message.error(e.message || String(e));
-        }
-    };
-
-    // 卖家接受某个报价（调用合约 acceptOffer）
-    const acceptOffer = async (tokenId: number, index: number) => {
-        if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
-        try {
-            await easyBetContract.methods.acceptOffer(tokenId, index).send({ from: account });
-            message.success('已接受报价并完成交易');
-            // 刷新我的票据与市场挂单
-            try {
-                const m = await easyBetContract.methods.getAllListings().call();
-                const tokenIds = m[0] as string[]; const sellers = m[1] as string[]; const prices = m[2] as string[];
-                setMarketListings(tokenIds.map((t, i) => ({ tokenId: Number(t), seller: sellers[i], priceWei: prices[i] })));
-                // 更新我的挂单过滤
-                const mine = tokenIds
-                    .map((t, i) => ({ tokenId: Number(t), seller: sellers[i], priceWei: prices[i] }))
-                    .filter(a => a.seller.toLowerCase() === account.toLowerCase())
-                    .map(a => ({ tokenId: a.tokenId, price: web3.utils.fromWei(a.priceWei, 'ether') }));
-                setMyListings(mine);
-            } catch (_) { /* ignore */ }
-            await refreshMyTickets();
-            // 刷新当前选中报价列表
-            await fetchOffersForToken(tokenId);
-        } catch (e: any) {
-            console.error('acceptOffer', e);
-            message.error(e.message || String(e));
-        }
-    };
+    // 已移除：根据合约当前版本仅支持 listing，不支持报价/offer
+    // function fetchOffersForToken(...) { ... }
+    // function makeOffer(...) { ... }
+    // function withdrawOffer(...) { ... }
+    // function acceptOffer(...) { ... }
 
     // 简单的页面布局，仅包含 EasyBet 功能入口
     return (
@@ -914,7 +893,7 @@ const LotteryPage = () => {
 
                 <div className="sub-section">
                     <div className="sub-section-title">创建竞猜</div>
-                    <div className="sub-section-body create-section-body">
+                    <div className="sub-section-body create-section_body">
                         <div className="create-section-row">
                             <span>竞猜内容：</span>
                             <Input
@@ -1053,43 +1032,71 @@ const LotteryPage = () => {
             {/* ========== 3. 交易 ========== */}
             <Divider><span className="main-section-title">3. 交易</span></Divider>
             <div>
+                {/* 市场挂单（仅 Listing） */}
                 <div className="sub-section">
-                    <div className="sub-section-title">市场挂单：</div>
+                    <div className="sub-section-title">
+                        市场挂单：
+                        <Button style={{ marginLeft: 8 }} onClick={refreshMarketListings}>刷新</Button>
+                    </div>
                     {marketListings.length === 0 ? <div>-</div> : (
-                        <List size="small" bordered dataSource={marketListings} renderItem={(it) => (
-                            <List.Item actions={[
-                                <Button onClick={() => { setOfferTokenId(String(it.tokenId)); fetchOffersForToken(it.tokenId); }}>查看报价</Button>,
-                                <Button onClick={() => { setOfferTokenId(String(it.tokenId)); setOfferPriceEth('0.01'); }}>报价</Button>
-                            ]}>
-                                {`Token ${it.tokenId} | Seller: ${it.seller} | Price: ${web3.utils.fromWei(it.priceWei, 'ether')} ETH`}
-                            </List.Item>
-                        )} />
+                        <List
+                            size="small"
+                            bordered
+                            dataSource={marketListings}
+                            renderItem={(it) => (
+                                <List.Item
+                                    actions={[
+                                        it.seller.toLowerCase() === (account || '').toLowerCase()
+                                            ? <Button onClick={() => cancelListing(it.tokenId)}>取消挂单</Button>
+                                            : <Button type="primary" onClick={() => buyListedTicket(it.tokenId)}>购买</Button>
+                                    ]}
+                                >
+                                    {`Token ${it.tokenId} | Seller: ${it.seller} | Price: ${web3.utils.fromWei(it.priceWei, 'ether')} ETH`}
+                                </List.Item>
+                            )}
+                        />
                     )}
                 </div>
 
+                {/* 我来挂单 */}
                 <div className="sub-section">
-                    <div className="sub-section-title">报价</div>
+                    <div className="sub-section-title">我来挂单</div>
                     <div className="sub-section-body">
-                        <Input placeholder="tokenId" value={offerTokenId} onChange={e => setOfferTokenId(e.target.value)} style={{ width: 200 }} />
-                        <Input placeholder="报价 ETH" value={offerPriceEth} onChange={e => setOfferPriceEth(e.target.value)} style={{ width: 200, marginLeft: 8 }} />
-                        <Button onClick={() => makeOffer(Number(offerTokenId), offerPriceEth)} style={{ marginLeft: 8 }}>提交报价</Button>
+                        <Input
+                            placeholder="tokenId"
+                            value={listTokenId}
+                            onChange={e => setListTokenId(e.target.value)}
+                            style={{ width: 200 }}
+                        />
+                        <Input
+                            placeholder="价格 ETH"
+                            value={listPriceEth}
+                            onChange={e => setListPriceEth(e.target.value)}
+                            style={{ width: 200, marginLeft: 8 }}
+                        />
+                        <Button type="primary" onClick={listTicket} style={{ marginLeft: 8 }}>上架</Button>
                     </div>
                 </div>
 
+                {/* 手动购买 / 取消（可选） */}
                 <div className="sub-section">
-                    <div className="sub-section-title">已选挂单报价：</div>
-                    {selectedListingOffers ? (
-                        <List size="small" bordered dataSource={selectedListingOffers.bidders.map((b, i) => ({ b, p: selectedListingOffers.prices[i], idx: i }))} renderItem={(it) => (
-                            <List.Item actions={[
-                                it.b.toLowerCase() === account.toLowerCase() ? <Button onClick={() => withdrawOffer(Number(offerTokenId), it.idx)}>撤回我的报价</Button> : null,
-                                // 如果当前用户是卖家则显示接受按钮
-                                (marketListings.find(m => m.tokenId === Number(offerTokenId))?.seller.toLowerCase() === account.toLowerCase()) ?
-                                    <Button onClick={() => acceptOffer(Number(offerTokenId), it.idx)}>接受该报价</Button> : null
-                            ]}>
-                                {`Bidder: ${it.b} | Price: ${it.p} ETH`}
-                            </List.Item>
-                        )} />
-                    ) : <div>-</div>}
+                    <div className="sub-section-title">手动购买 / 取消</div>
+                    <div className="sub-section-body">
+                        <Input
+                            placeholder="购买 tokenId"
+                            value={buyListedTokenId}
+                            onChange={e => setBuyListedTokenId(e.target.value)}
+                            style={{ width: 200 }}
+                        />
+                        <Button onClick={() => buyListedTicket()} style={{ marginLeft: 8 }}>购买</Button>
+                        <Input
+                            placeholder="取消 tokenId"
+                            value={cancelTokenId}
+                            onChange={e => setCancelTokenId(e.target.value)}
+                            style={{ width: 200, marginLeft: 16 }}
+                        />
+                        <Button danger onClick={() => cancelListing()} style={{ marginLeft: 8 }}>取消挂单</Button>
+                    </div>
                 </div>
             </div>
         </div>

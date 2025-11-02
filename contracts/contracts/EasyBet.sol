@@ -3,14 +3,12 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-// import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title EasyBet - 去中心化的竞猜与票据交易（ERC721）合约
 /// @author GitHub Copilot
 /// @notice 合约支持公证人创建竞猜活动（多个选项），玩家下注获得 ERC721 票据，票据可二级交易，公证人结算并按胜出票据均分奖池。
 contract EasyBet is ERC721, Ownable, ReentrancyGuard {
-    // using Counters for Counters.Counter; // 移除
     uint256 private _tokenIds; // 票据 tokenId 计数器（从 0 开始，铸造前自增）
     uint256 private _activityIds; // 活动 id 计数器（从 0 开始，创建前自增）
 
@@ -51,33 +49,6 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
     mapping(address => uint256[]) private _ownerTickets;
     // tokenId -> 在_ownerTickets[array] 中的位置（index），存储 index + 1（0 表示不存在）
     mapping(uint256 => uint256) private _ownerTicketIndex;
-
-    // 报价结构体与存储（每个 tokenId 对应一组报价）
-    struct Offer {
-        address bidder;
-        uint256 price; // wei
-        bool exists;
-    }
-    mapping(uint256 => Offer[]) private _offers;
-
-    function _addTicketToOwner(address owner, uint256 tokenId) private {
-        uint256 length = _ownerTickets[owner].length;
-        _ownerTickets[owner].push(tokenId);
-        _ownerTicketIndex[tokenId] = length + 1;
-    }
-
-    function _removeTicketFromOwner(address owner, uint256 tokenId) private {
-        uint256 index = _ownerTicketIndex[tokenId];
-        if (index == 0) return;
-        uint256 lastIndex = _ownerTickets[owner].length - 1;
-        uint256 lastTokenId = _ownerTickets[owner][lastIndex];
-        if (index - 1 != lastIndex) {
-            _ownerTickets[owner][index - 1] = lastTokenId;
-            _ownerTicketIndex[lastTokenId] = index;
-        }
-        _ownerTickets[owner].pop();
-        delete _ownerTicketIndex[tokenId];
-    }
 
     // 事件
 
@@ -123,24 +94,6 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         uint256 winningChoice, // 获胜选项
         uint256 winnersCount, // 获胜票数
         uint256 totalPool // 最终奖池
-    );
-
-    // 新增事件：报价 / 撤回报价 / 接受报价
-    event OfferPlaced(
-        uint256 indexed tokenId,
-        address indexed bidder,
-        uint256 price
-    );
-    event OfferWithdrawn(
-        uint256 indexed tokenId,
-        address indexed bidder,
-        uint256 price
-    );
-    event OfferAccepted(
-        uint256 indexed tokenId,
-        address indexed seller,
-        address indexed buyer,
-        uint256 price
     );
 
     // 将初始 owner 传给 OpenZeppelin v5 的 Ownable 基类
@@ -229,6 +182,14 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
     /// @param price 挂单价格（wei）
     function listTicket(uint256 tokenId, uint256 price) external {
         require(ownerOf(tokenId) == msg.sender, "Not the ticket owner");
+
+        // 检查票据对应的活动是否已结算
+        uint256 activityId = tickets[tokenId].activityId;
+        require(
+            !activities[activityId].settled,
+            "Activity already settled, cannot list ticket"
+        );
+
         require(price > 0, "Price must be greater than 0");
         // 合约需要被批准可以转移该 token
         require(
@@ -343,12 +304,53 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         return _ownerTickets[owner];
     }
 
+    /// @notice 获取用户票据的详细信息
+    function getTicketsWithDetails(
+        address owner
+    )
+        external
+        view
+        returns (
+            uint256[] memory tokenIds,
+            uint256[] memory activityIds,
+            uint256[] memory choiceIndices,
+            uint256[] memory amounts,
+            bool[] memory isListed,
+            uint256[] memory listingPrices
+        )
+    {
+        uint256[] memory ownedTokenIds = _ownerTickets[owner];
+        uint256 count = ownedTokenIds.length;
+
+        tokenIds = new uint256[](count);
+        activityIds = new uint256[](count);
+        choiceIndices = new uint256[](count);
+        amounts = new uint256[](count);
+        isListed = new bool[](count);
+        listingPrices = new uint256[](count);
+
+        for (uint256 i = 0; i < count; i++) {
+            uint256 tokenId = ownedTokenIds[i];
+            Ticket storage ticket = tickets[tokenId];
+
+            tokenIds[i] = tokenId;
+            activityIds[i] = ticket.activityId;
+            choiceIndices[i] = ticket.choiceIndex;
+            amounts[i] = ticket.amount;
+
+            // 检查是否已挂单
+            Listing storage listing = listings[tokenId];
+            isListed[i] = listing.exists;
+            listingPrices[i] = listing.exists ? listing.price : 0;
+        }
+    }
+
     /// @notice 判断 activityId 是否存在（用于前端与内部校验）
     function activityExists(uint256 activityId) public view returns (bool) {
         return activityId > 0 && activityId <= _activityIds;
     }
 
-    /// @notice 返回某地址创建的所有 activity ids（用于前端自动查询“我创建的活动”）
+    /// @notice 返回某地址创建的所有 activity ids（用于前端自动查询"我创建的活动"）
     function getActivitiesByCreator(
         address creator
     ) external view returns (uint256[] memory) {
@@ -404,23 +406,6 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         }
     }
 
-    /// @notice 返回某 tokenId 的所有报价（bidders 与 prices 数组）
-    function getOffers(
-        uint256 tokenId
-    )
-        external
-        view
-        returns (address[] memory bidders, uint256[] memory prices)
-    {
-        Offer[] storage arr = _offers[tokenId];
-        bidders = new address[](arr.length);
-        prices = new uint256[](arr.length);
-        for (uint256 i = 0; i < arr.length; i++) {
-            bidders[i] = arr[i].bidder;
-            prices[i] = arr[i].price;
-        }
-    }
-
     /// @notice 返回活动的详细信息（不包含 creator 与 ticketIds），包括每个选项的累计下注金额
     function getActivityDetail(
         uint256 activityId
@@ -464,81 +449,6 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         }
     }
 
-    // ========== 报价相关操作 ==========
-
-    /// @notice 对某个 token 提交报价（需附带 ETH 作为出价担保）
-    function makeOffer(uint256 tokenId) external payable {
-        require(msg.value > 0, "Offer must be > 0");
-        // 保存报价（无法保证唯一，允许同一个用户对同一 token 多次出价）
-        Offer memory o = Offer({
-            bidder: msg.sender,
-            price: msg.value,
-            exists: true
-        });
-        _offers[tokenId].push(o);
-        emit OfferPlaced(tokenId, msg.sender, msg.value);
-    }
-
-    /// @notice 撤回自己对某 token 的某个报价（按 index）
-    function withdrawOffer(
-        uint256 tokenId,
-        uint256 index
-    ) external nonReentrant {
-        Offer[] storage arr = _offers[tokenId];
-        require(index < arr.length, "Invalid index");
-        Offer storage o = arr[index];
-        require(o.exists, "Offer not exists");
-        require(o.bidder == msg.sender, "Not your offer");
-        uint256 price = o.price;
-
-        // 删除该报价：swap with last, pop
-        uint256 last = arr.length - 1;
-        if (index != last) {
-            arr[index] = arr[last];
-        }
-        arr.pop();
-
-        // 退回出价款项
-        (bool sent, ) = payable(msg.sender).call{value: price}("");
-        require(sent, "Refund failed");
-        emit OfferWithdrawn(tokenId, msg.sender, price);
-    }
-
-    /// @notice 卖家接受某个报价（index），将 token 转给出价者并把价款转给卖家（需要卖家已批准合约可转移 token）
-    function acceptOffer(uint256 tokenId, uint256 index) external nonReentrant {
-        require(ownerOf(tokenId) == msg.sender, "Only token owner can accept");
-        Offer[] storage arr = _offers[tokenId];
-        require(index < arr.length, "Invalid index");
-        Offer memory o = arr[index];
-        require(o.exists, "Offer not exists");
-
-        address seller = msg.sender;
-        address buyer = o.bidder;
-        uint256 price = o.price;
-
-        // 合约必须可以从 seller 转移 token（seller 需要 approve 给合约 或 setApprovalForAll）
-        require(
-            _isApprovedOrOwnerForListing(tokenId, seller),
-            "Contract not approved to transfer token"
-        );
-
-        // 删除该 offer（swap-pop）
-        uint256 last = arr.length - 1;
-        if (index != last) {
-            arr[index] = arr[last];
-        }
-        arr.pop();
-
-        // 转移 token（合约被批准）
-        _safeTransfer(seller, buyer, tokenId, "");
-
-        // 支付给卖家
-        (bool sent, ) = payable(seller).call{value: price}("");
-        require(sent, "Transfer to seller failed");
-
-        emit OfferAccepted(tokenId, seller, buyer, price);
-    }
-
     // ========== 内部与辅助函数 ==========
 
     /// @notice 检查卖家是否已经给合约批准用于转移 tokenId（要么单个 approve，要么 setApprovalForAll）
@@ -550,6 +460,29 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         if (approved == address(this)) return true;
         if (isApprovedForAll(seller, address(this))) return true;
         return false;
+    }
+
+    function _addTicketToOwner(address owner, uint256 tokenId) private {
+        uint256 length = _ownerTickets[owner].length;
+        _ownerTickets[owner].push(tokenId);
+        _ownerTicketIndex[tokenId] = length + 1;
+    }
+
+    function _removeTicketFromOwner(address owner, uint256 tokenId) private {
+        uint256 indexPlusOne = _ownerTicketIndex[tokenId];
+        if (indexPlusOne == 0) return;
+
+        uint256 index = indexPlusOne - 1;
+        uint256 lastIndex = _ownerTickets[owner].length - 1;
+        uint256 lastTokenId = _ownerTickets[owner][lastIndex];
+
+        if (index != lastIndex) {
+            _ownerTickets[owner][index] = lastTokenId;
+            _ownerTicketIndex[lastTokenId] = index + 1;
+        }
+
+        _ownerTickets[owner].pop();
+        delete _ownerTicketIndex[tokenId];
     }
 
     // ========== 紧急取款（仅 owner） ==========
@@ -569,6 +502,15 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         address auth
     ) internal override returns (address) {
         address from = super._update(to, tokenId, auth);
+
+        // 如果票据有挂单，自动取消（防止非市场交易后的无效挂单）
+        if (listings[tokenId].exists) {
+            delete listings[tokenId];
+            if (from != address(0)) {
+                emit TicketListingCanceled(tokenId, from);
+            }
+        }
+
         if (from != address(0)) {
             _removeTicketFromOwner(from, tokenId);
         }
