@@ -40,10 +40,28 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         bool exists;
     }
 
+    // 交易状态
+    enum TradeStatus {
+        None,
+        Ongoing,
+        Canceled,
+        Completed
+    }
+
+    // 当前票据的交易信息（按票号记录当前/最近一次交易）
+    struct Trade {
+        address seller;
+        address buyer; // 若无人购买则为 address(0)
+        uint256 price;
+        TradeStatus status;
+    }
+
     // mappings
     mapping(uint256 => Activity) public activities; // activityId => Activity
     mapping(uint256 => Ticket) public tickets; // tokenId => Ticket
     mapping(uint256 => Listing) public listings; // tokenId => Listing
+    // 新增：记录每张票的交易信息
+    mapping(uint256 => Trade) public trades;
 
     // 维护持有人 -> tokenId 列表，便于前端查询用户的票据
     mapping(address => uint256[]) private _ownerTickets;
@@ -202,6 +220,15 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
             price: price,
             exists: true
         });
+
+        // 新增：记录/覆盖交易为“进行中”
+        trades[tokenId] = Trade({
+            seller: msg.sender,
+            buyer: address(0),
+            price: price,
+            status: TradeStatus.Ongoing
+        });
+
         emit TicketListed(tokenId, msg.sender, price);
     }
 
@@ -210,7 +237,20 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         Listing storage l = listings[tokenId];
         require(l.exists, "No listing");
         require(l.seller == msg.sender, "Only seller can cancel");
+        // 先保存价格再删除，避免删除后读取为 0
+        uint256 price = l.price;
         delete listings[tokenId];
+
+        // 新增：交易置为“取消”
+        Trade storage t = trades[tokenId];
+        if (t.seller == address(0)) {
+            t.seller = msg.sender;
+        }
+        if (t.price == 0) {
+            t.price = price;
+        }
+        t.status = TradeStatus.Canceled;
+
         emit TicketListingCanceled(tokenId, msg.sender);
     }
 
@@ -223,6 +263,13 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         address seller = l.seller;
         address buyer = msg.sender;
         uint256 price = l.price;
+
+        // 新增：先标记交易“完成”并记录买家
+        Trade storage t = trades[tokenId];
+        t.seller = seller;
+        t.buyer = buyer;
+        t.price = price;
+        t.status = TradeStatus.Completed;
 
         // 删除挂单（避免重入期间重复使用）
         delete listings[tokenId];
@@ -406,6 +453,14 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         }
     }
 
+    /// @notice 查询单个挂单信息
+    function getListing(
+        uint256 tokenId
+    ) external view returns (address seller, uint256 price, bool exists) {
+        Listing storage l = listings[tokenId];
+        return (l.seller, l.price, l.exists);
+    }
+
     /// @notice 返回活动的详细信息（不包含 creator 与 ticketIds），包括每个选项的累计下注金额
     function getActivityDetail(
         uint256 activityId
@@ -447,6 +502,73 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         for (uint256 j = 0; j < mLen; j++) {
             choiceBetAmounts[j] = a.choiceBetAmounts[j];
         }
+    }
+
+    /// @notice 查询某票号的交易信息
+    function getTrade(
+        uint256 tokenId
+    )
+        external
+        view
+        returns (
+            address seller,
+            address buyer,
+            uint256 price,
+            TradeStatus status
+        )
+    {
+        Trade storage t = trades[tokenId];
+        return (t.seller, t.buyer, t.price, t.status);
+    }
+
+    /// @notice 返回所有存在过交易记录的票（状态不为 None）
+    function getAllTrades()
+        external
+        view
+        returns (
+            uint256[] memory tokenIds,
+            address[] memory sellers,
+            address[] memory buyers,
+            uint256[] memory prices,
+            TradeStatus[] memory statuses
+        )
+    {
+        uint256 cnt = 0;
+        for (uint256 i = 1; i <= _tokenIds; i++) {
+            if (trades[i].status != TradeStatus.None) cnt++;
+        }
+        tokenIds = new uint256[](cnt);
+        sellers = new address[](cnt);
+        buyers = new address[](cnt);
+        prices = new uint256[](cnt);
+        statuses = new TradeStatus[](cnt);
+        uint256 j = 0;
+        for (uint256 i = 1; i <= _tokenIds; i++) {
+            if (trades[i].status != TradeStatus.None) {
+                tokenIds[j] = i;
+                sellers[j] = trades[i].seller;
+                buyers[j] = trades[i].buyer;
+                prices[j] = trades[i].price;
+                statuses[j] = trades[i].status;
+                j++;
+            }
+        }
+    }
+
+    /// @notice 判断某个地址是否为活动的参与者（持有未结算的票据）
+    function isParticipant(
+        uint256 activityId,
+        address user
+    ) external view returns (bool) {
+        require(activityExists(activityId), "Activity does not exist");
+        Activity storage a = activities[activityId];
+        for (uint i = 0; i < a.ticketIds.length; i++) {
+            uint256 tid = a.ticketIds[i];
+            if (ownerOf(tid) == user && !a.settled) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ========== 内部与辅助函数 ==========
@@ -506,6 +628,8 @@ contract EasyBet is ERC721, Ownable, ReentrancyGuard {
         // 如果票据有挂单，自动取消（防止非市场交易后的无效挂单）
         if (listings[tokenId].exists) {
             delete listings[tokenId];
+            // 新增：同步交易为“取消”
+            trades[tokenId].status = TradeStatus.Canceled;
             if (from != address(0)) {
                 emit TicketListingCanceled(tokenId, from);
             }

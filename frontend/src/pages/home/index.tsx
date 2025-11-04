@@ -1,4 +1,4 @@
-import { Button, Divider, Input, message, List, Table, Tag, Checkbox } from 'antd';
+import { Button, Divider, Input, message, Table, Tag, Checkbox, Modal, InputNumber } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useState, useCallback } from 'react';
 import type { Key } from 'react';
@@ -88,8 +88,23 @@ const LotteryPage = () => {
     const [myActivities, setMyActivities] = useState<number[]>([]);
     const [myTicketDetails, setMyTicketDetails] = useState<MyTicketDetail[]>([]);
     const [myTicketsLoading, setMyTicketsLoading] = useState<boolean>(false);
-    const [myListings, setMyListings] = useState<{ tokenId: number; price: string }[]>([]);
-    const [marketListings, setMarketListings] = useState<{ tokenId: number; seller: string; priceWei: string }[]>([]);
+    const [myListings, setMyListings] = useState<{ tokenId: number; price: string; status: number }[]>([]);
+    // 将市场列表扩展为交易（含买家与状态 + 活动/票据信息）
+    const [marketListings, setMarketListings] = useState<{
+        tokenId: number;
+        seller: string;
+        buyer: string;
+        priceWei: string;
+        status: number;
+        // 新增：活动与票据信息
+        activityId: number;
+        content: string;
+        deadlineText: string;
+        settled: boolean;
+        totalPoolEth: string;
+        ticketChoiceName: string;
+        ticketBetAmountEth: string;
+    }[]>([]);
     // 移除：买家报价相关状态
     // const [selectedListingOffers, setSelectedListingOffers] = useState<{ bidders: string[]; prices: string[] } | null>(null);
     // const [offerTokenId, setOfferTokenId] = useState<string>('');
@@ -101,16 +116,29 @@ const LotteryPage = () => {
     const [betOptionsLoading, setBetOptionsLoading] = useState<boolean>(false);
     const [settleActivityDetail, setSettleActivityDetail] = useState<ActivityDetailView | null>(null);
     const [settleOptionsLoading, setSettleOptionsLoading] = useState<boolean>(false);
+    // 新增：挂单弹窗状态
+    const [listModalOpen, setListModalOpen] = useState<boolean>(false);
+    const [listModalTokenId, setListModalTokenId] = useState<number | null>(null);
+    const [listModalPriceEth, setListModalPriceEth] = useState<string>('0.02');
+
+    // 工具：根据地址渲染“我”或“其他玩家 XXXX”
+    const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+    const formatPlayer = (addr?: string) => {
+        if (!addr || addr.toLowerCase() === ZERO_ADDR) return '-';
+        if (account && addr.toLowerCase() === account.toLowerCase()) return '我';
+        const prefix = addr.replace(/^0x/i, '').slice(0, 4).toUpperCase();
+        return `其他玩家 ${prefix}`;
+    };
+
     const activityColumns: ColumnsType<ActivityDetailView> = [
         { title: '竞猜ID', dataIndex: 'id', key: 'id', width: 80, align: 'center' },
         { title: '竞猜内容', dataIndex: 'content', key: 'content', width: 300, align: 'center' },
         {
             title: '创建者',
             key: 'creator',
-            width: 100,
+            width: 140,
             align: 'center',
-            render: (_: any, record: ActivityDetailView) =>
-                account && record.creator.toLowerCase() === account.toLowerCase() ? '我' : '其他',
+            render: (_: any, record: ActivityDetailView) => formatPlayer(record.creator),
         },
         { title: '截止时间', dataIndex: 'deadlineText', key: 'deadline', width: 150, align: 'center' },
         {
@@ -212,7 +240,7 @@ const LotteryPage = () => {
     };
 
     const myTicketColumns: ColumnsType<MyTicketDetail> = [
-        { title: '序号', dataIndex: 'order', key: 'order', width: 70, align: 'center' },
+        { title: '票号', dataIndex: 'tokenId', key: 'tokenId', width: 100, align: 'center' },
         { title: '竞猜内容', dataIndex: 'content', key: 'content', width: 220, align: 'center' },
         { title: '截止时间', dataIndex: 'deadlineText', key: 'deadlineText', width: 150, align: 'center' },
         {
@@ -228,7 +256,7 @@ const LotteryPage = () => {
                 </div>
             ),
         },
-        { title: '我的选择', dataIndex: 'myChoiceName', key: 'myChoiceName', width: 140, align: 'center' },
+        { title: '下注选项', dataIndex: 'myChoiceName', key: 'myChoiceName', width: 140, align: 'center' },
         { title: '下注金额 (ETH)', dataIndex: 'myBetAmountEth', key: 'myBetAmountEth', width: 140, align: 'center' },
         { title: '获胜选项', dataIndex: 'winningChoiceName', key: 'winningChoiceName', width: 160, align: 'center' },
         { title: '奖池金额 (ETH)', dataIndex: 'totalPoolEth', key: 'totalPoolEth', width: 150, align: 'center' },
@@ -240,7 +268,114 @@ const LotteryPage = () => {
             render: (_: any, record: MyTicketDetail) =>
                 record.settled ? <Tag color="green">已结算</Tag> : <Tag color="blue">进行中</Tag>,
         },
+        // 新增：操作列（可挂单）
+        {
+            title: '操作',
+            key: 'actions',
+            width: 160,
+            align: 'center',
+            render: (_: any, record: MyTicketDetail) => {
+                // 已结算不可挂单
+                if (record.settled) return <span style={{ color: '#999' }}>已结算</span>;
+                // 是否已在市场“进行中”挂单
+                const listedByMe = marketListings.some(
+                    it => it.status === 1
+                        && it.tokenId === record.tokenId
+                        && it.seller.toLowerCase() === (account || '').toLowerCase()
+                );
+                if (listedByMe) return <span style={{ color: '#999' }}>已挂单</span>;
+                // 可挂单（绿色按钮）
+                return (
+                    <Button
+                        type="primary"
+                        style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
+                        onClick={() => handleListFromOwned(record.tokenId)}
+                    >
+                        挂单
+                    </Button>
+                );
+            },
+        },
     ];
+
+    // 新增：交易状态渲染
+    const renderTradeStatus = (s: number) => {
+        if (s === 1) return <Tag color="blue">进行中</Tag>;
+        if (s === 2) return <Tag color="orange">取消</Tag>;
+        if (s === 3) return <Tag color="green">完成</Tag>;
+        return <Tag>—</Tag>;
+    };
+
+    // 我的挂单表格列
+    const myListingColumns: ColumnsType<{ tokenId: number; price: string; status: number }> = [
+        { title: '票号', dataIndex: 'tokenId', key: 'tokenId', width: 100, align: 'center' },
+        { title: '价格 (ETH)', dataIndex: 'price', key: 'price', width: 140, align: 'center' },
+        {
+            title: '状态',
+            dataIndex: 'status',
+            key: 'status',
+            width: 120,
+            align: 'center',
+            render: (s: number) => renderTradeStatus(s),
+        },
+        {
+            title: '操作',
+            key: 'actions',
+            width: 160,
+            align: 'center',
+            render: (_: any, record) =>
+                record.status === 1 ? (
+                    <Button danger onClick={() => cancelListing(record.tokenId)}>取消挂单</Button>
+                ) : (
+                    <span style={{ color: '#999' }}>无</span>
+                ),
+        },
+    ];
+
+    // 市场交易表格列
+    const marketColumns: ColumnsType<{
+        tokenId: number; seller: string; buyer: string; priceWei: string; status: number;
+        activityId: number; content: string; deadlineText: string; settled: boolean; totalPoolEth: string;
+        ticketChoiceName: string; ticketBetAmountEth: string;
+    }> = [
+            { title: '票号', dataIndex: 'tokenId', key: 'tokenId', width: 80, align: 'center' },
+            { title: '竞猜ID', dataIndex: 'activityId', key: 'activityId', width: 90, align: 'center' },
+            { title: '竞猜内容', dataIndex: 'content', key: 'content', width: 220, align: 'center' },
+            { title: '截止时间', dataIndex: 'deadlineText', key: 'deadlineText', width: 160, align: 'center' },
+            { title: '卖家', dataIndex: 'seller', key: 'seller', width: 140, align: 'center', render: (s: string) => formatPlayer(s) },
+            { title: '买家', dataIndex: 'buyer', key: 'buyer', width: 140, align: 'center', render: (b: string) => formatPlayer(b) },
+            { title: '下注选项', dataIndex: 'ticketChoiceName', key: 'ticketChoiceName', width: 120, align: 'center' },
+            { title: '下注金额 (ETH)', dataIndex: 'ticketBetAmountEth', key: 'ticketBetAmountEth', width: 130, align: 'center' },
+            { title: '奖池金额 (ETH)', dataIndex: 'totalPoolEth', key: 'totalPoolEth', width: 130, align: 'center' },
+            {
+                title: '价格 (ETH)',
+                dataIndex: 'priceWei',
+                key: 'priceWei',
+                width: 120,
+                align: 'center',
+                render: (wei: string) => web3.utils.fromWei(wei, 'ether'),
+            },
+            {
+                title: '状态',
+                dataIndex: 'status',
+                key: 'status',
+                width: 100,
+                align: 'center',
+                render: (s: number) => renderTradeStatus(s),
+            },
+            {
+                title: '操作',
+                key: 'actions',
+                width: 120,
+                align: 'center',
+                render: (_: any, record) =>
+                    record.status === 1 && record.seller.toLowerCase() !== (account || '').toLowerCase() ? (
+                        <Button type="primary" onClick={() => buyListedTicket(record.tokenId)}>购买</Button>
+                    ) : (
+                        <span style={{ color: '#999' }}>无</span>
+                    ),
+            },
+        ];
 
     useEffect(() => {
         // 页面加载后尝试读取已连接账户
@@ -355,7 +490,7 @@ const LotteryPage = () => {
         refreshMyTickets();
     }, [refreshMyTickets]);
 
-    // 新增：加载市场挂单（仅 Listing）
+    // 新增：加载市场交易（含状态）
     const refreshMarketListings = useCallback(async () => {
         if (!easyBetContract) {
             setMarketListings([]);
@@ -363,26 +498,82 @@ const LotteryPage = () => {
             return;
         }
         try {
-            const m = await easyBetContract.methods.getAllListings().call();
-            const tokenIds = m[0] as string[];
-            const sellers = m[1] as string[];
-            const prices = m[2] as string[];
-            const items = tokenIds.map((t, i) => ({
+            const res = await easyBetContract.methods.getAllTrades().call();
+            const tokenIds = res[0] as string[];
+            const sellers = res[1] as string[];
+            const buyers = res[2] as string[];
+            const prices = res[3] as string[];
+            const statuses = res[4] as (string[] | number[]);
+
+            // 基础数据
+            const base = tokenIds.map((t, i) => ({
                 tokenId: Number(t),
                 seller: sellers[i],
+                buyer: buyers[i],
                 priceWei: prices[i],
+                status: Number((statuses as any)[i]),
             }));
-            setMarketListings(items);
+
+            // 逐条补充活动与票据信息
+            const enriched = await Promise.all(
+                base.map(async (b) => {
+                    try {
+                        const tk = await easyBetContract.methods.tickets(b.tokenId).call();
+                        const activityId = Number(tk.activityId ?? tk[0]);
+                        const choiceIndex = Number(tk.choiceIndex ?? tk[1]);
+                        const amountWei = tk.amount ?? tk[2];
+                        const ad: any = await easyBetContract.methods.getActivityDetail(activityId).call();
+                        const {
+                            deadline,
+                            content,
+                            choices,
+                            totalPool,
+                            settled
+                        } = ad;
+                        const choicesArr: string[] = choices as string[]; // names
+                        const ticketChoiceName = choicesArr[choiceIndex] ?? `选项 ${choiceIndex}`;
+                        return {
+                            ...b,
+                            activityId,
+                            content,
+                            deadlineText: new Date(Number(deadline) * 1000).toLocaleString(),
+                            settled: Boolean(settled),
+                            totalPoolEth: web3.utils.fromWei(totalPool, 'ether'),
+                            ticketChoiceName,
+                            ticketBetAmountEth: web3.utils.fromWei(amountWei, 'ether'),
+                        };
+                    } catch {
+                        // 出错时也返回基础字段，避免整表失败
+                        return {
+                            ...b,
+                            activityId: 0,
+                            content: '-',
+                            deadlineText: '-',
+                            settled: false,
+                            totalPoolEth: '0',
+                            ticketChoiceName: '-',
+                            ticketBetAmountEth: '0',
+                        };
+                    }
+                })
+            );
+
+            setMarketListings(enriched);
+
+            // “我的挂单”仅显示进行中且我为卖家（包含状态）
             if (account) {
-                const mine = items
-                    .filter((a) => a.seller.toLowerCase() === account.toLowerCase())
-                    .map((a) => ({ tokenId: a.tokenId, price: web3.utils.fromWei(a.priceWei, 'ether') }));
+                const mine = enriched
+                    .filter(a => a.status === 1 && a.seller.toLowerCase() === account.toLowerCase())
+                    .map(a => ({ tokenId: a.tokenId, price: web3.utils.fromWei(a.priceWei, 'ether'), status: a.status }));
                 setMyListings(mine);
             } else {
                 setMyListings([]);
             }
         } catch (e) {
-            console.error('refreshMarketListings', e);
+            console.error('refreshMarketListings(getAllTrades) failed', e);
+            setMarketListings([]);
+            setMyListings([]);
+            message.error('加载市场交易失败，请稍后重试');
         }
     }, [easyBetContract, account]);
 
@@ -632,7 +823,7 @@ const LotteryPage = () => {
         );
 
         if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         try {
             const content = activityContent.trim();
             if (!content) { message.warning('请填写竞猜内容'); return; }
@@ -673,14 +864,14 @@ const LotteryPage = () => {
                 console.error('refresh myActivities after createActivity failed', err);
             }
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('创建失败：' + (e?.message || '请稍后重试'));
         }
     };
 
     // 买票（下注并铸造 ERC721 票据），value 为 ETH
     const buyTicket = async () => {
         if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         if (!buyActivityId) { message.warning('请输入竞猜 ID'); return; }
         if (buyChoiceIndex === '') { message.warning('请先选择投注选项'); return; }
         try {
@@ -699,66 +890,114 @@ const LotteryPage = () => {
                 console.error('refresh after buyTicket', refreshError);
             }
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('下注失败：' + (e?.message || '请稍后重试'));
         }
     };
 
-    // 上架票据（先 approve 本合约，再调用 listTicket）
-    const listTicket = async () => {
-        if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+    // 新增：从“我持有的票”发起挂单（使用弹窗组件）
+    const handleListFromOwned = async (tokenId: number) => {
+        setListModalTokenId(tokenId);
+        setListModalPriceEth('0.02');
+        setListModalOpen(true);
+    };
+
+    // 弹窗确认挂单
+    const confirmListModal = async () => {
+        if (!listModalTokenId) return;
+        const price = Number(listModalPriceEth);
+        if (!listModalPriceEth || Number.isNaN(price) || price <= 0) {
+            message.warning('请输入有效的金额');
+            return;
+        }
         try {
-            const tokenId = Number(listTokenId);
+            await listTicket(listModalTokenId, listModalPriceEth);
+            setListModalOpen(false);
+            setListModalTokenId(null);
+            setListModalPriceEth('0.02');
+            await refreshMarketListings();
+            await refreshMyTickets();
+        } catch (e) {
+            // listTicket 已处理报错
+        }
+    };
+
+    const cancelListModal = () => {
+        setListModalOpen(false);
+        setListModalTokenId(null);
+    };
+
+    // 上架票据（先 approve 本合约，再调用 listTicket）
+    const listTicket = async (tokenIdParam?: number, priceEthParam?: string) => {
+        if (!account) { message.warning('请先连接钱包'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
+        try {
+            const tokenId = Number(tokenIdParam ?? listTokenId);
+            const priceEth = String(priceEthParam ?? listPriceEth);
+            if (!Number.isFinite(tokenId) || tokenId <= 0) { message.warning('无效的票号'); return; }
+            if (!priceEth || Number(priceEth) <= 0 || isNaN(Number(priceEth))) { message.warning('请输入有效的金额'); return; }
             const contractAddress = easyBetContract.options.address;
             // owner 调用 approve（ERC721 自带）
             await easyBetContract.methods.approve(contractAddress, tokenId).send({ from: account });
-            await easyBetContract.methods.listTicket(tokenId, web3.utils.toWei(listPriceEth, 'ether')).send({ from: account });
+            await easyBetContract.methods.listTicket(tokenId, web3.utils.toWei(priceEth, 'ether')).send({ from: account });
             setStatus('Ticket listed: ' + tokenId);
-            message.success('Ticket listed: ' + tokenId);
+            message.success('已挂单：票号 ' + tokenId);
             await refreshMarketListings();
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('挂单失败：' + (e?.message || '请稍后重试'));
         }
     };
 
     // 取消挂单（支持直接传入 tokenId）
     const cancelListing = async (tokenIdParam?: number) => {
         if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         try {
             const id = tokenIdParam ?? Number(cancelTokenId);
             await easyBetContract.methods.cancelListing(id).send({ from: account });
             setStatus('Listing canceled: ' + id);
-            message.success('Listing canceled: ' + id);
+            message.success('取消挂单成功：' + id);
             await refreshMarketListings();
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('取消失败：' + (e?.message || '请稍后重试'));
         }
     };
 
     // 购买挂单票据（支持直接传入 tokenId，需发送 exact price）
     const buyListedTicket = async (tokenIdParam?: number) => {
         if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         try {
             const id = tokenIdParam ?? Number(buyListedTokenId);
-            const l = await easyBetContract.methods.getListing(id).call();
-            if (!l || !l.exists) { message.warning('No listing'); return; }
-            const price = l.price;
+
+            // 兼容旧 ABI：优先使用 getListing，若不存在则回退到 getTrade
+            let price: string;
+            const hasGetListing = typeof (easyBetContract.methods as any).getListing === 'function';
+            if (hasGetListing) {
+                const l = await (easyBetContract.methods as any).getListing(id).call();
+                if (!l || !l.exists) { message.warning('未找到该挂单或已被处理'); return; }
+                price = l.price;
+            } else {
+                // 回退读取交易信息
+                const t = await (easyBetContract.methods as any).getTrade(id).call();
+                const status = Number((t.status ?? t[3]));
+                if (status !== 1) { message.warning('该票据当前没有有效挂单'); return; }
+                price = (t.price ?? t[2]);
+            }
+
             await easyBetContract.methods.buyListedTicket(id).send({ from: account, value: price });
             setStatus('Bought listed ticket ' + id);
-            message.success('Bought listed ticket ' + id);
+            message.success('购买成功：' + id);
             await refreshMyTickets();
             await refreshMarketListings();
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('购买失败：' + (e?.message || '请稍后重试'));
         }
     };
 
     // 结算活动（owner 调用）
     const settleActivity = async () => {
         if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         if (!settleActivityId) { message.warning('请先填写需要结算的竞猜编号'); return; }
         if (winningChoiceIndex === '') { message.warning('请先选择本次结算的胜出选项'); return; }
         try {
@@ -784,7 +1023,7 @@ const LotteryPage = () => {
     // 查询活动（选择数量 + 活动票据 id 列表）
     const getActivityInfo = async () => {
         if (!queryActivityId) { message.warning('请输入竞猜 id'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         try {
             const exists = await easyBetContract.methods.activityExists(Number(queryActivityId)).call();
             if (!exists) { message.warning('竞猜不存在'); return; }
@@ -794,49 +1033,49 @@ const LotteryPage = () => {
             setStatus('已获取竞猜信息');
             message.success('已获取竞猜信息');
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('查询竞猜失败：' + (e?.message || '请稍后重试'));
         }
     };
 
     // 查询票据信息（activityId, choiceIndex, amount）
     const getTicketInfo = async () => {
-        if (!queryTokenId) { message.warning('请输入 ticket id'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!queryTokenId) { message.warning('请输入票号'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         try {
             const info = await easyBetContract.methods.getTicketInfo(Number(queryTokenId)).call();
             setTicketInfo(info);
             setStatus('Fetched ticket info');
-            message.success('Fetched ticket info');
+            message.success('已获取票据信息');
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('查询票据失败：' + (e?.message || '请稍后重试'));
         }
     };
 
     // 查询挂单信息
     const getListing = async () => {
-        if (!queryListingTokenId) { message.warning('请输入 token id'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!queryListingTokenId) { message.warning('请输入票号'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         try {
             const l = await easyBetContract.methods.getListing(Number(queryListingTokenId)).call();
             setListingInfo(l);
             setStatus('Fetched listing info');
-            message.success('Fetched listing info');
+            message.success('已获取挂单信息');
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('查询挂单失败：' + (e?.message || '请稍后重试'));
         }
     };
 
     // Owner 提取合约余额（示例）
     const withdraw = async (amountEth: string) => {
         if (!account) { message.warning('请先连接钱包'); return; }
-        if (!easyBetContract) { message.error('Contract not available'); return; }
+        if (!easyBetContract) { message.error('合约未就绪，请刷新页面或稍后再试'); return; }
         try {
             const wei = web3.utils.toWei(amountEth, 'ether');
             await easyBetContract.methods.withdraw(wei).send({ from: account });
             setStatus('Withdraw done');
-            message.success('Withdraw done');
+            message.success('提现成功');
         } catch (e: any) {
-            message.error(e.message || String(e));
+            message.error('提现失败：' + (e?.message || '请稍后重试'));
         }
     };
 
@@ -1020,85 +1259,63 @@ const LotteryPage = () => {
                 </div>
 
                 <div className="sub-section">
-                    <div className="sub-section-title">我的挂单（来自市场过滤）：</div>
-                    {myListings.length === 0 ? <div>-</div> : (
-                        <List size="small" bordered dataSource={myListings} renderItem={(it) => (
-                            <List.Item>{`Token ${it.tokenId} - Price ${it.price} ETH`}</List.Item>
-                        )} />
-                    )}
+                    <div className="sub-section-title">我的挂单</div>
+                    <Table
+                        bordered
+                        size="small"
+                        columns={myListingColumns}
+                        dataSource={myListings}
+                        rowKey="tokenId"
+                        pagination={false}
+                        locale={{ emptyText: account ? '暂无挂单' : '请先连接钱包' }}
+                    />
                 </div>
             </div>
 
             {/* ========== 3. 交易 ========== */}
             <Divider><span className="main-section-title">3. 交易</span></Divider>
             <div>
-                {/* 市场挂单（仅 Listing） */}
+                {/* 市场交易（含状态） */}
                 <div className="sub-section">
                     <div className="sub-section-title">
-                        市场挂单：
+                        交易市场：
                         <Button style={{ marginLeft: 8 }} onClick={refreshMarketListings}>刷新</Button>
                     </div>
-                    {marketListings.length === 0 ? <div>-</div> : (
-                        <List
-                            size="small"
-                            bordered
-                            dataSource={marketListings}
-                            renderItem={(it) => (
-                                <List.Item
-                                    actions={[
-                                        it.seller.toLowerCase() === (account || '').toLowerCase()
-                                            ? <Button onClick={() => cancelListing(it.tokenId)}>取消挂单</Button>
-                                            : <Button type="primary" onClick={() => buyListedTicket(it.tokenId)}>购买</Button>
-                                    ]}
-                                >
-                                    {`Token ${it.tokenId} | Seller: ${it.seller} | Price: ${web3.utils.fromWei(it.priceWei, 'ether')} ETH`}
-                                </List.Item>
-                            )}
-                        />
-                    )}
-                </div>
-
-                {/* 我来挂单 */}
-                <div className="sub-section">
-                    <div className="sub-section-title">我来挂单</div>
-                    <div className="sub-section-body">
-                        <Input
-                            placeholder="tokenId"
-                            value={listTokenId}
-                            onChange={e => setListTokenId(e.target.value)}
-                            style={{ width: 200 }}
-                        />
-                        <Input
-                            placeholder="价格 ETH"
-                            value={listPriceEth}
-                            onChange={e => setListPriceEth(e.target.value)}
-                            style={{ width: 200, marginLeft: 8 }}
-                        />
-                        <Button type="primary" onClick={listTicket} style={{ marginLeft: 8 }}>上架</Button>
-                    </div>
-                </div>
-
-                {/* 手动购买 / 取消（可选） */}
-                <div className="sub-section">
-                    <div className="sub-section-title">手动购买 / 取消</div>
-                    <div className="sub-section-body">
-                        <Input
-                            placeholder="购买 tokenId"
-                            value={buyListedTokenId}
-                            onChange={e => setBuyListedTokenId(e.target.value)}
-                            style={{ width: 200 }}
-                        />
-                        <Button onClick={() => buyListedTicket()} style={{ marginLeft: 8 }}>购买</Button>
-                        <Input
-                            placeholder="取消 tokenId"
-                            value={cancelTokenId}
-                            onChange={e => setCancelTokenId(e.target.value)}
-                            style={{ width: 200, marginLeft: 16 }}
-                        />
-                        <Button danger onClick={() => cancelListing()} style={{ marginLeft: 8 }}>取消挂单</Button>
-                    </div>
+                    <Table
+                        bordered
+                        size="small"
+                        columns={marketColumns}
+                        dataSource={marketListings}
+                        rowKey="tokenId"
+                        pagination={false}
+                        locale={{ emptyText: '暂无市场交易' }}
+                    />
                 </div>
             </div>
+
+            {/* 新增：挂单金额输入弹窗 */}
+            <Modal
+                title="设置挂单金额"
+                open={listModalOpen}
+                onOk={confirmListModal}
+                onCancel={cancelListModal}
+                okText="确认挂单"
+                cancelText="取消"
+            >
+                <div style={{ marginBottom: 8 }}>票号：{listModalTokenId ?? '-'}</div>
+                <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <span style={{ marginRight: 8 }}>交易金额 (ETH)：</span>
+                    <InputNumber
+                        value={listModalPriceEth === '' ? undefined : Number(listModalPriceEth)}
+                        onChange={(v) => setListModalPriceEth(v === null || v === undefined ? '' : String(v))}
+                        min={0}
+                        step={0.001}
+                        stringMode
+                        style={{ width: 200 }}
+                        placeholder="请输入金额"
+                    />
+                </div>
+            </Modal>
         </div>
     );
 };
