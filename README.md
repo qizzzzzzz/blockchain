@@ -1,4 +1,4 @@
-# blockchain
+# easybet
 
 ## 如何运行
 1. 在本地启动ganache应用。
